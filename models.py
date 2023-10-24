@@ -3,6 +3,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
+from avhubert.avhubert_as_upstream import AVHubertEncoder
 from utils import init_weights, get_padding
 
 LRELU_SLOPE = 0.1
@@ -123,6 +124,17 @@ class Generator(torch.nn.Module):
             l.remove_weight_norm()
         remove_weight_norm(self.conv_pre)
         remove_weight_norm(self.conv_post)
+    
+class AVHuBERTGenerator(nn.Module):
+    def __init__(self, hifigenerator_config, avhubert_config) -> None:
+        super().__init__()
+        self.visual_frontend = AVHubertEncoder(avhubert_config)
+        self.generator = Generator(hifigenerator_config)
+    
+    def forward(self, x):
+        mel_generated = self.visual_frontend(x)
+        wav_generated = self.generator(mel_generated)
+        return wav_generated
 
 
 class DiscriminatorP(torch.nn.Module):
