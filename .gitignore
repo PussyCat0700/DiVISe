@@ -1,0 +1,4 @@
+*.json
+generator_v*
+*.pyc
+cp_hifigan/

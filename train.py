@@ -27,6 +27,7 @@ def train(rank, a, h):
                            world_size=h.dist_config['world_size'] * h.num_gpus, rank=rank)
 
     torch.cuda.manual_seed(h.seed)
+    torch.cuda.set_device(rank)  # A very strong boost. See https://github.com/jik876/hifi-gan/pull/25
     device = torch.device('cuda:{:d}'.format(rank))
 
     generator = Generator(h).to(device)
