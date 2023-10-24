@@ -1,4 +1,6 @@
 import warnings
+
+from tqdm import tqdm
 warnings.simplefilter(action='ignore', category=FutureWarning)
 import itertools
 import os
@@ -110,8 +112,8 @@ def train(rank, a, h):
 
         if h.num_gpus > 1:
             train_sampler.set_epoch(epoch)
-
-        for i, batch in enumerate(train_loader):
+        pbar = tqdm(train_loader)
+        for batch in pbar:
             if rank == 0:
                 start_b = time.time()
             x, y, _, y_mel = batch
@@ -162,7 +164,7 @@ def train(rank, a, h):
                     with torch.no_grad():
                         mel_error = F.l1_loss(y_mel, y_g_hat_mel).item()
 
-                    print('Steps : {:d}, Gen Loss Total : {:4.3f}, Mel-Spec. Error : {:4.3f}, s/b : {:4.3f}'.
+                    pbar.set_description('Steps : {:d}, Gen Loss Total : {:4.3f}, Mel-Spec. Error : {:4.3f}, s/b : {:4.3f}'.
                           format(steps, loss_gen_all, mel_error, time.time() - start_b))
 
                 # checkpointing
@@ -185,7 +187,7 @@ def train(rank, a, h):
                     sw.add_scalar("training/mel_spec_error", mel_error, steps)
 
                 # Validation
-                if steps % a.validation_interval == 0:  # and steps != 0:
+                if steps % a.validation_interval == 0 and steps != 0:
                     generator.eval()
                     torch.cuda.empty_cache()
                     val_err_tot = 0
