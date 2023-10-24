@@ -1,0 +1,1 @@
+from avhubert.avhubert_as_upstream import load_avhubert_model

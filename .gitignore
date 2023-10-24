@@ -2,3 +2,4 @@
 generator_v*
 *.pyc
 cp_hifigan/
+*.pt

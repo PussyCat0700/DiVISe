@@ -1,0 +1,25 @@
+_name: av_hubert
+label_rate: ???
+skip_masked: false
+skip_nomask: false
+modality_dropout: 0.0
+modality_fuse: concat
+selection_type: same_seq
+masking_type: input
+mask_prob_image: 0.3
+mask_length_image: 5
+mask_prob_audio: 0.8
+mask_length_audio: 10
+extractor_mode: default
+# conv_feature_layers: '[(512,10,5)] + [(512,3,2)] * 4 + [(512,2,2)] * 2'
+final_dim: 256
+encoder_layerdrop: 0.05
+dropout_input: 0.1
+dropout_features: 0.1
+dropout: 0.1
+attention_dropout: 0.1
+feature_grad_mult: 0.1
+untie_final_proj: true
+activation_dropout: 0.0
+layer_norm_first: true
+audio_feat_dim: 104
