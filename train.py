@@ -89,18 +89,10 @@ def train(rank, a, h, avhubert_config):
     scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=h.lr_decay, last_epoch=last_epoch)
     # TODO
     trainset = load_dataset("train", avhubert_config["task"])
-    # trainset = MelDataset(training_filelist, h.segment_size, h.n_fft, h.num_mels,
-    #                       h.hop_size, h.win_size, h.sampling_rate, h.fmin, h.fmax, n_cache_reuse=0,
-    #                       shuffle=False if h.num_gpus > 1 else True, fmax_loss=h.fmax_for_loss, device=device,
-    #                       fine_tuning=a.fine_tuning, base_mels_path=a.input_mels_dir)
     train_loader, train_sampler = get_dataloader(trainset, h, shuffle=True)
 
     if rank == 0:
         validset = load_dataset("valid", avhubert_config["task"])
-        # validset = MelDataset(validation_filelist, h.segment_size, h.n_fft, h.num_mels,
-        #                       h.hop_size, h.win_size, h.sampling_rate, h.fmin, h.fmax, False, False, n_cache_reuse=0,
-        #                       fmax_loss=h.fmax_for_loss, device=device, fine_tuning=a.fine_tuning,
-        #                       base_mels_path=a.input_mels_dir)
         validation_loader, _ = get_dataloader(validset, h, shuffle=False)
 
         sw = SummaryWriter(os.path.join(a.checkpoint_path, 'logs'))
@@ -136,7 +128,6 @@ def train(rank, a, h, avhubert_config):
             y_mel = mel_spectrogram(y, h.n_fft, h.num_mels,
                                   h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax,
                                   center=False)
-            # x = torch.autograd.Variable(x.to(device, non_blocking=True))
             y = torch.autograd.Variable(y.to(device, non_blocking=True))
             y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
             y = y.unsqueeze(1)
@@ -213,9 +204,13 @@ def train(rank, a, h, avhubert_config):
                     with torch.no_grad():
                         pbar2 = tqdm(validation_loader, desc="Validation in progress...")
                         for j, batch in enumerate(pbar2):
-                            x, y, _, y_mel = batch
-                            y_g_hat = generator(x.to(device))
+                            avhubert_source_batch = batch["net_input"]["source"]
+                            y = avhubert_source_batch["audio"].to(device)
+                            y_mel = mel_spectrogram(y, h.n_fft, h.num_mels,
+                                                h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax,
+                                                center=False)
                             y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
+                            y_g_hat, feature_visual = generator(avhubert_source_batch["video"].to(device))
                             y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate,
                                                           h.hop_size, h.win_size,
                                                           h.fmin, h.fmax_for_loss)
@@ -224,10 +219,10 @@ def train(rank, a, h, avhubert_config):
                             if j <= 4:
                                 if steps == 0:
                                     sw.add_audio('gt/y_{}'.format(j), y[0], steps, h.sampling_rate)
-                                    sw.add_figure('gt/y_spec_{}'.format(j), plot_spectrogram(x[0]), steps)
+                                    sw.add_figure('gt/y_spec_{}'.format(j), plot_spectrogram(y_mel[0].cpu()), steps)
 
                                 sw.add_audio('generated/y_hat_{}'.format(j), y_g_hat[0], steps, h.sampling_rate)
-                                y_hat_spec = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels,
+                                y_hat_spec = mel_spectrogram(y_g_hat[0].cpu(), h.n_fft, h.num_mels,
                                                              h.sampling_rate, h.hop_size, h.win_size,
                                                              h.fmin, h.fmax)
                                 sw.add_figure('generated/y_hat_spec_{}'.format(j),
