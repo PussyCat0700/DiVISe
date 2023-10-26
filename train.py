@@ -1,6 +1,10 @@
+import logging
+import sys
 import warnings
 
 from tqdm import tqdm
+
+from dataset import load_avhubert_config, load_dataset, get_dataloader
 warnings.simplefilter(action='ignore', category=FutureWarning)
 import itertools
 import os
@@ -10,20 +14,25 @@ import json
 import torch
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
-from torch.utils.data import DistributedSampler, DataLoader
 import torch.multiprocessing as mp
 from torch.distributed import init_process_group
 from torch.nn.parallel import DistributedDataParallel
 from env import AttrDict, build_env
-from meldataset import MelDataset, mel_spectrogram, get_dataset_filelist
-from models import Generator, MultiPeriodDiscriminator, MultiScaleDiscriminator, feature_loss, generator_loss,\
+from dataset.meldataset import mel_spectrogram
+from models import AVHuBERTGenerator, MultiPeriodDiscriminator, MultiScaleDiscriminator, feature_loss, generator_loss,\
     discriminator_loss
 from utils import plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint
 
 torch.backends.cudnn.benchmark = True
+logging.basicConfig(
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        level=os.environ.get("LOGLEVEL", "INFO").upper(),
+        stream=sys.stdout,
+    )
+logging.getLogger(__name__)
 
-
-def train(rank, a, h):
+def train(rank, a, h, avhubert_config):
     if h.num_gpus > 1:
         init_process_group(backend=h.dist_config['dist_backend'], init_method=h.dist_config['dist_url'],
                            world_size=h.dist_config['world_size'] * h.num_gpus, rank=rank)
@@ -31,21 +40,26 @@ def train(rank, a, h):
     torch.cuda.manual_seed(h.seed)
     torch.cuda.set_device(rank)  # A very strong boost. See https://github.com/jik876/hifi-gan/pull/25
     device = torch.device('cuda:{:d}'.format(rank))
-
-    generator = Generator(h).to(device)
+    
+    generator = AVHuBERTGenerator(hifigenerator_config=h,
+                                  avhubert_model_config=avhubert_config["model"], 
+                                  dictionaries=[2004*[0]], # dictionary is a fake one. We don't need it in model.
+                                  ).to(device)
     mpd = MultiPeriodDiscriminator().to(device)
     msd = MultiScaleDiscriminator().to(device)
 
     if rank == 0:
-        print(generator)
+        logging.info('model loaded.')
         os.makedirs(a.checkpoint_path, exist_ok=True)
-        print("checkpoints directory : ", a.checkpoint_path)
+        logging.info(f"checkpoints directory : {a.checkpoint_path}")
 
     if os.path.isdir(a.checkpoint_path):
         cp_g = scan_checkpoint(a.checkpoint_path, 'g_')
         cp_do = scan_checkpoint(a.checkpoint_path, 'do_')
 
     steps = 0
+    if a.avhubert_ckpt is not None:
+        generator.load_pretrained_avhubertmodel(a.avhubert_ckpt, map_location=device)
     if cp_g is None or cp_do is None:
         state_dict_do = None
         last_epoch = -1
@@ -73,32 +87,21 @@ def train(rank, a, h):
 
     scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=h.lr_decay, last_epoch=last_epoch)
     scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=h.lr_decay, last_epoch=last_epoch)
-
-    training_filelist, validation_filelist = get_dataset_filelist(a)
-
-    trainset = MelDataset(training_filelist, h.segment_size, h.n_fft, h.num_mels,
-                          h.hop_size, h.win_size, h.sampling_rate, h.fmin, h.fmax, n_cache_reuse=0,
-                          shuffle=False if h.num_gpus > 1 else True, fmax_loss=h.fmax_for_loss, device=device,
-                          fine_tuning=a.fine_tuning, base_mels_path=a.input_mels_dir)
-
-    train_sampler = DistributedSampler(trainset) if h.num_gpus > 1 else None
-
-    train_loader = DataLoader(trainset, num_workers=h.num_workers, shuffle=False,
-                              sampler=train_sampler,
-                              batch_size=h.batch_size,
-                              pin_memory=True,
-                              drop_last=True)
+    # TODO
+    trainset = load_dataset("train", avhubert_config["task"])
+    # trainset = MelDataset(training_filelist, h.segment_size, h.n_fft, h.num_mels,
+    #                       h.hop_size, h.win_size, h.sampling_rate, h.fmin, h.fmax, n_cache_reuse=0,
+    #                       shuffle=False if h.num_gpus > 1 else True, fmax_loss=h.fmax_for_loss, device=device,
+    #                       fine_tuning=a.fine_tuning, base_mels_path=a.input_mels_dir)
+    train_loader, train_sampler = get_dataloader(trainset, h, shuffle=True)
 
     if rank == 0:
-        validset = MelDataset(validation_filelist, h.segment_size, h.n_fft, h.num_mels,
-                              h.hop_size, h.win_size, h.sampling_rate, h.fmin, h.fmax, False, False, n_cache_reuse=0,
-                              fmax_loss=h.fmax_for_loss, device=device, fine_tuning=a.fine_tuning,
-                              base_mels_path=a.input_mels_dir)
-        validation_loader = DataLoader(validset, num_workers=1, shuffle=False,
-                                       sampler=None,
-                                       batch_size=1,
-                                       pin_memory=True,
-                                       drop_last=True)
+        validset = load_dataset("valid", avhubert_config["task"])
+        # validset = MelDataset(validation_filelist, h.segment_size, h.n_fft, h.num_mels,
+        #                       h.hop_size, h.win_size, h.sampling_rate, h.fmin, h.fmax, False, False, n_cache_reuse=0,
+        #                       fmax_loss=h.fmax_for_loss, device=device, fine_tuning=a.fine_tuning,
+        #                       base_mels_path=a.input_mels_dir)
+        validation_loader, _ = get_dataloader(validset, h, shuffle=False)
 
         sw = SummaryWriter(os.path.join(a.checkpoint_path, 'logs'))
 
@@ -108,7 +111,7 @@ def train(rank, a, h):
     for epoch in range(max(0, last_epoch), a.training_epochs):
         if rank == 0:
             start = time.time()
-            print("Epoch: {}".format(epoch+1))
+            logging.info("Epoch: {}".format(epoch+1))
 
         if h.num_gpus > 1:
             train_sampler.set_epoch(epoch)
@@ -116,13 +119,29 @@ def train(rank, a, h):
         for batch in pbar:
             if rank == 0:
                 start_b = time.time()
-            x, y, _, y_mel = batch
-            x = torch.autograd.Variable(x.to(device, non_blocking=True))
+            # x, y, _, y_mel = batch
+            """
+            batch:
+            # Useful for our training:
+            id(1D Tensor): sample ids(index) from dataset
+            net_input(dict): input for AV-HuBERT model
+            utt_id(List): file paths of samples
+            # Not useful for our training:
+            target_lengths(1D Tensor): length of output of text label processor. It is not the label for our task.
+            ntokens(int): total length of target_lengths.
+            target(BxT Tensor): output of text label processor. It is not the target for our task.
+            """
+            avhubert_source_batch = batch["net_input"]["source"]
+            y = avhubert_source_batch["audio"].to(device)
+            y_mel = mel_spectrogram(y, h.n_fft, h.num_mels,
+                                  h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax,
+                                  center=False)
+            # x = torch.autograd.Variable(x.to(device, non_blocking=True))
             y = torch.autograd.Variable(y.to(device, non_blocking=True))
             y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
             y = y.unsqueeze(1)
 
-            y_g_hat = generator(x)
+            y_g_hat, feature_visual = generator(avhubert_source_batch["video"].to(device))
             y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size,
                                           h.fmin, h.fmax_for_loss)
 
@@ -225,50 +244,48 @@ def train(rank, a, h):
         scheduler_d.step()
         
         if rank == 0:
-            print('Time taken for epoch {} is {} sec\n'.format(epoch + 1, int(time.time() - start)))
+            logging.info('Time taken for epoch {} is {} sec\n'.format(epoch + 1, int(time.time() - start)))
 
 
 def main():
-    print('Initializing Training Process..')
+    logging.info('Initializing Training Process..')
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--group_name', default=None)
-    parser.add_argument('--input_wavs_dir', default='LJSpeech-1.1/wavs')
-    parser.add_argument('--input_mels_dir', default='ft_dataset')
-    parser.add_argument('--input_training_file', default='LJSpeech-1.1/training.txt')
-    parser.add_argument('--input_validation_file', default='LJSpeech-1.1/validation.txt')
     parser.add_argument('--checkpoint_path', default='cp_hifigan')
-    parser.add_argument('--config', default='')
+    parser.add_argument('--hifigan_config', default='conf/hifigan/video2speech_v1.json')
+    parser.add_argument('--avhubert_config', default='conf/avhubert/base_avhubert.yaml')
+    parser.add_argument('--avhubert_ckpt', help='if specified, will load pretrained weight onto AVHuBERTModel')
     parser.add_argument('--training_epochs', default=3100, type=int)
     parser.add_argument('--stdout_interval', default=5, type=int)
     parser.add_argument('--checkpoint_interval', default=5000, type=int)
     parser.add_argument('--summary_interval', default=100, type=int)
     parser.add_argument('--validation_interval', default=1000, type=int)
-    parser.add_argument('--fine_tuning', default=False, type=bool)
 
     a = parser.parse_args()
 
-    with open(a.config) as f:
+    with open(a.hifigan_config) as f:
         data = f.read()
 
     json_config = json.loads(data)
     h = AttrDict(json_config)
-    build_env(a.config, 'config.json', a.checkpoint_path)
+    build_env(a.hifigan_config, 'hifigan_config.json', a.checkpoint_path)
+    
+    avhubert_config = load_avhubert_config(a.avhubert_config)
 
     torch.manual_seed(h.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(h.seed)
         h.num_gpus = torch.cuda.device_count()
         h.batch_size = int(h.batch_size / h.num_gpus)
-        print('Batch size per GPU :', h.batch_size)
+        logging.info(f'Batch size per GPU :{h.batch_size}')
     else:
         pass
 
     if h.num_gpus > 1:
-        mp.spawn(train, nprocs=h.num_gpus, args=(a, h,))
+        mp.spawn(train, nprocs=h.num_gpus, args=(a, h, avhubert_config))
     else:
-        train(0, a, h)
+        train(0, a, h, avhubert_config)
 
 
 if __name__ == '__main__':

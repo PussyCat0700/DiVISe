@@ -1,1 +1,2 @@
-from avhubert.avhubert_as_upstream import load_avhubert_model
+from avhubert.avhubert_as_upstream import AVHubertPretrainingConfig
+from avhubert.avhubert import AVHubertConfig

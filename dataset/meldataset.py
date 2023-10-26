@@ -92,7 +92,7 @@ class MelDataset(torch.utils.data.Dataset):
         random.seed(1234)
         if shuffle:
             random.shuffle(self.audio_files)
-        self.segment_size = segment_size
+        self.segment_size = segment_size  # segment_size % hop_size == 0 must stands.
         self.sampling_rate = sampling_rate
         self.split = split
         self.n_fft = n_fft

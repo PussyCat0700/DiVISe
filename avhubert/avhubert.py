@@ -28,17 +28,7 @@ from copy import deepcopy
 
 DBG=True if len(sys.argv) == 1 else False
 
-if DBG:
-    from resnet import ResEncoder
-    logging.basicConfig(
-        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-        level=os.environ.get("LOGLEVEL", "INFO").upper(),
-        stream=sys.stdout,
-    )
-
-else:
-    from .resnet import ResEncoder
+from avhubert.resnet import ResEncoder
 
 from omegaconf import II
 

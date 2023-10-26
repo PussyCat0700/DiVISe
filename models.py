@@ -126,15 +126,31 @@ class Generator(torch.nn.Module):
         remove_weight_norm(self.conv_post)
     
 class AVHuBERTGenerator(nn.Module):
-    def __init__(self, hifigenerator_config, avhubert_config) -> None:
+    def __init__(self, hifigenerator_config, avhubert_model_config, dictionaries) -> None:
         super().__init__()
-        self.visual_frontend = AVHubertEncoder(avhubert_config)
+        self.num_mels = hifigenerator_config.num_mels
+        self.frontend_with_encoder = AVHubertEncoder(avhubert_model_config, dictionaries=dictionaries)
         self.generator = Generator(hifigenerator_config)
     
-    def forward(self, x):
-        mel_generated = self.visual_frontend(x)
+    def forward(self, video):
+        input = {"video": video, "audio": None,}
+        feature_visual, mel_generated_chunked = self.frontend_with_encoder(input)
+        # (bs, inlen/4, 320) -> (bs, inlen, num_mels=80)
+        mel_generated = mel_generated_chunked.reshape(*mel_generated_chunked.shape[:-2], -1, self.num_mels)
+        # (bs, inlen, num_mels=80) -> (bs, 80, inlen)
+        mel_generated = mel_generated.permute(0, 2, 1)
         wav_generated = self.generator(mel_generated)
-        return wav_generated
+        return wav_generated, feature_visual
+    
+    def load_pretrained_avhubertmodel(self, pretrained_avhubert_path:str, map_location):
+        avhubert_weight = torch.load(pretrained_avhubert_path, map_location=map_location)['model']
+        #  label_embs_concat and final_proj will not be used in feature extraction.
+        self.frontend_with_encoder.avhubert_model.load_state_dict(avhubert_weight)
+    
+    def load_pretrained_avhubertencoder(self, pretrained_path:str, map_location):
+        avhubert_weight = torch.load(pretrained_path, map_location=map_location)['state_dict']
+        #  label_embs_concat and final_proj will not be used in feature extraction.
+        self.frontend_with_encoder.load_state_dict(avhubert_weight)
 
 
 class DiscriminatorP(torch.nn.Module):
