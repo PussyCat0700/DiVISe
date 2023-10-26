@@ -143,6 +143,9 @@ class AVHubertDataset(FairseqDataset):
                 custom_utils.Normalize(image_mean, image_std) ])
         self.sr_video = 25
         self.sr_audio = 16000
+        self.hop_size_mel = 160  # for trimming purpose only
+        assert self.sr_audio%self.hop_size_mel==0 and (self.sr_audio//self.hop_size_mel)%self.sr_video==0, "Please check sample rate"
+        self.video2mel_magnitude = int(self.sr_audio/self.hop_size_mel/self.sr_video)  # 4
         self.max_video_sample_size = int(self.sr_video*self.max_sample_seconds)
         self.max_audio_sample_size = int(self.sr_audio*self.max_sample_seconds)
         logger.info(f"using video fps {self.sr_video} and audio sr {self.sr_audio}.")
@@ -283,6 +286,9 @@ class AVHubertDataset(FairseqDataset):
             audio_sizes = [len(s) for s in audio_source]
         if video_source is not None:
             video_sizes = [len(s) for s in video_source]
+        if audio_source is not None and video_source is not None:
+            # compulsory align and trim for audio
+            audio_sizes = [video_size*self.video2mel_magnitude*self.hop_size_mel for video_size in video_sizes]
         if self.pad_audio:
             func = lambda curr_x, max_sample_x: min(max(curr_x), max_sample_x)
         else:

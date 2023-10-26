@@ -1,5 +1,9 @@
 # HiFi-GAN: Generative Adversarial Networks for Efficient and High Fidelity Speech Synthesis
 
+## hyperparameters that cannot change in hifigan
+- num_mels:80
+- hop_size:160 (for 16kHz to stay at 100 frame rate)
+
 ### Jungil Kong, Jaehyeon Kim, Jaekyoung Bae
 
 In our [paper](https://arxiv.org/abs/2010.05646), 

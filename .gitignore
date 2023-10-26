@@ -1,4 +1,5 @@
 *.json
+*.yaml
 generator_v*
 *.pyc
 cp_hifigan/
