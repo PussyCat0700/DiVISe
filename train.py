@@ -60,6 +60,8 @@ def train(rank, a, h, avhubert_config):
     steps = 0
     if a.avhubert_ckpt is not None:
         generator.load_pretrained_avhubertmodel(a.avhubert_ckpt, map_location=device)
+    if a.avhubertmel_ckpt is not None:
+        generator.load_pretrained_avhubertencoder(a.avhubertmel_ckpt, map_location=device)
     if cp_g is None or cp_do is None:
         state_dict_do = None
         last_epoch = -1
@@ -251,11 +253,12 @@ def main():
     parser.add_argument('--hifigan_config', default='conf/hifigan/video2speech_v1.json')
     parser.add_argument('--avhubert_config', default='conf/avhubert/base_avhubert.yaml')
     parser.add_argument('--avhubert_ckpt', help='if specified, will load pretrained weight onto AVHuBERTModel')
-    parser.add_argument('--training_epochs', default=3100, type=int)
+    parser.add_argument('--avhubertmel_ckpt', help='if specified, will load weight for AVHuBERTEncoder(mel generator)')
+    parser.add_argument('--training_epochs', default=100, type=int)
     parser.add_argument('--stdout_interval', default=5, type=int)
-    parser.add_argument('--checkpoint_interval', default=5000, type=int)
+    parser.add_argument('--checkpoint_interval', default=37383, type=int)
     parser.add_argument('--summary_interval', default=100, type=int)
-    parser.add_argument('--validation_interval', default=1000, type=int)
+    parser.add_argument('--validation_interval', default=37383, type=int)
 
     a = parser.parse_args()
 

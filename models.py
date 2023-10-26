@@ -149,8 +149,12 @@ class AVHuBERTGenerator(nn.Module):
     
     def load_pretrained_avhubertencoder(self, pretrained_path:str, map_location):
         avhubert_weight = torch.load(pretrained_path, map_location=map_location)['state_dict']
+        torch_state_dict = {
+            k.replace('model.frontend_with_encoder.', '', 1) if k.startswith('model.frontend_with_encoder') else k: v
+            for k,v in avhubert_weight.items()
+        }
         #  label_embs_concat and final_proj will not be used in feature extraction.
-        self.frontend_with_encoder.load_state_dict(avhubert_weight)
+        self.frontend_with_encoder.load_state_dict(torch_state_dict)
 
 
 class DiscriminatorP(torch.nn.Module):
