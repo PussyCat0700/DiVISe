@@ -1,6 +1,7 @@
 import logging
 import sys
 import warnings
+from omegaconf import OmegaConf
 
 from tqdm import tqdm
 
@@ -111,6 +112,7 @@ def train(rank, a, h, avhubert_config):
         if h.num_gpus > 1:
             train_sampler.set_epoch(epoch)
         pbar = tqdm(train_loader)
+        len_epoch = len(pbar)
         for batch in pbar:
             if rank == 0:
                 start_b = time.time()
@@ -177,8 +179,8 @@ def train(rank, a, h, avhubert_config):
                     with torch.no_grad():
                         mel_error = F.l1_loss(y_mel, y_g_hat_mel).item()
 
-                    pbar.set_description('Steps : {:d}, Gen Loss Total : {:4.3f}, Mel-Spec. Error : {:4.3f}, s/b : {:4.3f}'.
-                          format(steps, loss_gen_all, mel_error, time.time() - start_b))
+                    pbar.set_description('Epoch: {:d}, Gen Loss Total : {:4.3f}, Mel-Spec. Error : {:4.3f}, s/b : {:4.3f}'.
+                          format(epoch, loss_gen_all, mel_error, time.time() - start_b))
 
                 # checkpointing
                 if steps % a.checkpoint_interval == 0 and steps != 0:
@@ -198,6 +200,7 @@ def train(rank, a, h, avhubert_config):
                 if steps % a.summary_interval == 0:
                     sw.add_scalar("training/gen_loss_total", loss_gen_all, steps)
                     sw.add_scalar("training/mel_spec_error", mel_error, steps)
+                    sw.add_scalar("training/epoch", (epoch+1)*(steps/len_epoch), steps)
 
                 # Validation
                 if steps % a.validation_interval == 0 and steps != 0:
@@ -220,8 +223,10 @@ def train(rank, a, h, avhubert_config):
                             val_err_tot += F.l1_loss(y_mel, y_g_hat_mel).item()
 
                             if j <= 4:
+                                text = batch["target"]
                                 if steps // a.validation_interval == 1:
                                     sw.add_audio('gt/y_{}'.format(j), y[0], steps, h.sampling_rate)
+                                    sw.add_text('gt/y_text_{}'.format(j), text[0], steps)
                                     sw.add_figure('gt/y_spec_{}'.format(j), plot_spectrogram(y_mel[0].cpu()), steps)
 
                                 sw.add_audio('generated/y_hat_{}'.format(j), y_g_hat[0], steps, h.sampling_rate)
@@ -272,6 +277,7 @@ def main():
     build_env(a.hifigan_config, 'hifigan_config.json', a.checkpoint_path)
     
     avhubert_config = load_avhubert_config(a.avhubert_config)
+    OmegaConf.save(avhubert_config, os.path.join(a.checkpoint_path, 'avhubert_config.yaml'))
 
     torch.manual_seed(h.seed)
     if torch.cuda.is_available():

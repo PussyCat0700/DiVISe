@@ -70,7 +70,6 @@ def load_dataset(split: str, cfg:AVHubertPretrainingConfig) -> None:
             image_crop_size=cfg.image_crop_size,  # 88
             image_aug=image_aug,  # False in infernece
             modalities=modalities,  # if your modality setting doesn't work, this might be where to find a clue.
-            is_s2s=cfg.is_s2s,  # should be False in ctc setting.
             # noise_fn=noise_fn,
             # noise_prob=cfg.noise_prob,  # 0.0
             # noise_snr=noise_snr,

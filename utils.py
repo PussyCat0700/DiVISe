@@ -21,6 +21,12 @@ def save_wav_16khz(wav_outdir:str, wav:torch.Tensor):
     wav = wav.cpu().numpy()
     write(wav_outdir, 16_000, wav)
     
+def denormalize_vidtensor(vid_tensor:torch.Tensor, image_mean:float, image_std:float):
+    vid_tensor = vid_tensor.permute(1, 2, 3, 0)  # [T, H, W, C]
+    vid_tensor = vid_tensor*image_std+image_mean
+    vid_tensor = vid_tensor*255+0.0
+    return vid_tensor
+
 def save_video(vid_outdir:str, vid_tensor:torch.Tensor, avhuberttaskconfig:AVHubertPretrainingConfig, ffmpeg_path:str):
     """saves video from item in AVHubertDataset
 
@@ -30,10 +36,8 @@ def save_video(vid_outdir:str, vid_tensor:torch.Tensor, avhuberttaskconfig:AVHub
         image_mean (str): image_mean in avhubert config.
         image_std (str): img_std in avhubert config.
     """
-    vid_tensor = vid_tensor.permute(1, 2, 3, 0)  # [T, H, W, C]
-    video = vid_tensor.cpu().numpy()
-    video = video*avhuberttaskconfig.image_std+avhuberttaskconfig.image_mean
-    video = video*255+0.0
+    video = denormalize_vidtensor(vid_tensor, avhuberttaskconfig.image_mean, avhuberttaskconfig.image_std)
+    video = video.cpu().numpy()
     with tempfile.TemporaryDirectory() as dirname:
         for i, img in enumerate(video):
             cv2.imwrite(os.path.join(dirname, str(i+1).zfill(4)+".png"), img)

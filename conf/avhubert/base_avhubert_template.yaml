@@ -1,6 +1,5 @@
 task:
   _name: av_hubert_pretraining
-  is_s2s: true
   data: ??? # replace with your data dir (preprocessed LRS3 or VoxCeleb2)
   label_dir: ${data}  # usually just the same as data
   normalize: true  # must be consistent with pre-training

@@ -100,7 +100,6 @@ class AVHubertDataset(FairseqDataset):
             image_crop_size: int=88,
             image_aug: bool=False,
             modalities: Optional[List[str]]=None,
-            is_s2s=False,
             noise_fn=None,
             noise_prob=0,
             noise_snr=0,
@@ -115,7 +114,6 @@ class AVHubertDataset(FairseqDataset):
         self.num_labels = len(label_paths)
         self.single_target = single_target
         self.store_labels = store_labels
-        self.is_s2s = is_s2s
         self.noise_wav, self.noise_prob, self.noise_snr, self.noise_num = [ln.strip() for ln in open(noise_fn).readlines()] if noise_fn is not None else [], noise_prob, noise_snr, noise_num
         if store_labels:
             self.label_list = [load_label(p, inds, tot) for p in label_paths]
@@ -153,8 +151,7 @@ class AVHubertDataset(FairseqDataset):
 
         logger.info(
             f"pad_audio={pad_audio}, random_crop={random_crop}, "
-            f"normalize={normalize}, {self.max_sample_seconds=}, "
-            f"seqs2seq data={self.is_s2s},")
+            f"normalize={normalize}, {self.max_sample_seconds=}, ")
         logger.info(
             f"Noise wav: {noise_fn}->{len(self.noise_wav)} wav, Prob: {self.noise_prob}, SNR: {self.noise_snr}, Number of mixture: {self.noise_num}"
         )
@@ -321,10 +318,7 @@ class AVHubertDataset(FairseqDataset):
         if self.single_target:
             batch["target_lengths"] = lengths_list[0]
             batch["ntokens"] = ntokens_list[0]
-            if self.is_s2s:
-                batch['target'], net_input['prev_output_tokens'] = targets_list[0][0], targets_list[0][1]
-            else:
-                batch["target"] = targets_list[0]
+            batch["target"] = targets_list[0]
         else:
             batch["target_lengths_list"] = lengths_list
             batch["ntokens_list"] = ntokens_list
@@ -381,13 +375,14 @@ class AVHubertDataset(FairseqDataset):
 
 
     def collater_label_text(self, targets_by_label):
-        lengths_list, ntokens_list = [], []
+        targets_list, lengths_list, ntokens_list = [], [], []
         for targets in targets_by_label:
             lengths = [len(t) for t in targets]
             ntokens = sum(lengths)
+            targets_list.append(targets)
             lengths_list.append(lengths)
             ntokens_list.append(ntokens)
-        return targets, lengths_list, ntokens_list
+        return targets_list, lengths_list, ntokens_list
 
     def num_tokens(self, index):
         return self.size(index)
