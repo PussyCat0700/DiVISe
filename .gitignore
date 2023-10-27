@@ -6,3 +6,7 @@ cp_hifigan/
 *.pt
 out_v0_noweight/logs/events.out.tfevents.1698134574.houyi.856591.0
 *.0
+*.log
+*.png
+*.wandb
+/wandb

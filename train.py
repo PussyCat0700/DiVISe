@@ -14,6 +14,7 @@ import json
 import torch
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
+import wandb
 import torch.multiprocessing as mp
 from torch.distributed import init_process_group
 from torch.nn.parallel import DistributedDataParallel
@@ -219,7 +220,7 @@ def train(rank, a, h, avhubert_config):
                             val_err_tot += F.l1_loss(y_mel, y_g_hat_mel).item()
 
                             if j <= 4:
-                                if steps == 0:
+                                if steps // a.validation_interval == 1:
                                     sw.add_audio('gt/y_{}'.format(j), y[0], steps, h.sampling_rate)
                                     sw.add_figure('gt/y_spec_{}'.format(j), plot_spectrogram(y_mel[0].cpu()), steps)
 
@@ -259,6 +260,7 @@ def main():
     parser.add_argument('--checkpoint_interval', default=37383, type=int)
     parser.add_argument('--summary_interval', default=100, type=int)
     parser.add_argument('--validation_interval', default=37383, type=int)
+    parser.add_argument('--wandb', action='store_true')
 
     a = parser.parse_args()
 
@@ -279,7 +281,8 @@ def main():
         logging.info(f'Batch size per GPU :{h.batch_size}')
     else:
         pass
-
+    if a.wandb:
+        wandb.init(project=a.checkpoint_path, sync_tensorboard=True)
     if h.num_gpus > 1:
         mp.spawn(train, nprocs=h.num_gpus, args=(a, h, avhubert_config))
     else:
