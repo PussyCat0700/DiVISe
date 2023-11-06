@@ -106,8 +106,9 @@ class AVHubertPretrainingConfig(FairseqDataclass):
     fine_tuning: bool = field(default=False, metadata={"help": "set to true if fine-tuning AV-Hubert"})
 
 class AVHubertEncoder(nn.Module):
-    def __init__(self, cfg, dictionaries) -> None:
+    def __init__(self, cfg) -> None:
         super().__init__()
+        dictionaries=[2004*[0]], # dictionary is a fake one. We don't need it in model.
         self.avhubert_model = AVHubertModel(cfg=cfg, dictionaries=dictionaries)
         self.linear_proj_layer = torch.nn.Linear(768, 320)
     

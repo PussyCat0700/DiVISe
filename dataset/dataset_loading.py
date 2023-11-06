@@ -29,12 +29,12 @@ class AVHuBERTAdaptingCollater:
         batch = self.dataset.collater(samples=samples)
         return batch
 
-def get_dataloader(dataset:AVHubertDataset, h, shuffle):
-    sampler = DistributedSampler(dataset) if h.num_gpus > 1 else None
+def get_dataloader(dataset:AVHubertDataset, batch_size, shuffle, num_workers, dist_sampler=False):
+    sampler = DistributedSampler(dataset) if dist_sampler else None
     collate_fn_adapter = AVHuBERTAdaptingCollater(dataset)
-    loader = DataLoader(dataset, num_workers=h.num_workers, shuffle=shuffle,
+    loader = DataLoader(dataset, num_workers=num_workers, shuffle=shuffle,
                               sampler=sampler,
-                              batch_size=h.batch_size,
+                              batch_size=batch_size,
                               pin_memory=True,
                               drop_last=True,
                               collate_fn=collate_fn_adapter)

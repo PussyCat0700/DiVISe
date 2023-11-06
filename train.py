@@ -45,7 +45,6 @@ def train(rank, a, h, avhubert_config):
     
     generator = AVHuBERTGenerator(hifigenerator_config=h,
                                   avhubert_model_config=avhubert_config["model"], 
-                                  dictionaries=[2004*[0]], # dictionary is a fake one. We don't need it in model.
                                   ).to(device)
     mpd = MultiPeriodDiscriminator().to(device)
     msd = MultiScaleDiscriminator().to(device)
@@ -93,11 +92,19 @@ def train(rank, a, h, avhubert_config):
     scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=h.lr_decay, last_epoch=last_epoch)
     # TODO
     trainset = load_dataset("train", avhubert_config["task"])
-    train_loader, train_sampler = get_dataloader(trainset, h, shuffle=True)
+    train_loader, train_sampler = get_dataloader(trainset, 
+                                                batch_size=h.batch_size,
+                                                num_workers=h.num_workers, 
+                                                dist_sampler=h.num_gpus > 1,
+                                                shuffle=True)
 
     if rank == 0:
         validset = load_dataset("valid", avhubert_config["task"])
-        validation_loader, _ = get_dataloader(validset, h, shuffle=False)
+        validation_loader, _ = get_dataloader(validset, 
+                                            batch_size=h.batch_size,
+                                            num_workers=h.num_workers, 
+                                            dist_sampler=h.num_gpus > 1, 
+                                            shuffle=False)
 
         sw = SummaryWriter(os.path.join(a.checkpoint_path, 'logs'))
 

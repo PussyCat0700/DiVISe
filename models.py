@@ -126,10 +126,10 @@ class Generator(torch.nn.Module):
         remove_weight_norm(self.conv_post)
     
 class AVHuBERTGenerator(nn.Module):
-    def __init__(self, hifigenerator_config, avhubert_model_config, dictionaries) -> None:
+    def __init__(self, hifigenerator_config, avhubert_model_config) -> None:
         super().__init__()
         self.num_mels = hifigenerator_config.num_mels
-        self.frontend_with_encoder = AVHubertEncoder(avhubert_model_config, dictionaries=dictionaries)
+        self.frontend_with_encoder = AVHubertEncoder(avhubert_model_config)
         self.generator = Generator(hifigenerator_config)
     
     def forward(self, video):

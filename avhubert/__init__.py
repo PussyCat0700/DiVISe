@@ -1,2 +1,2 @@
-from avhubert.avhubert_as_upstream import AVHubertPretrainingConfig
+from avhubert.avhubert_as_upstream import AVHubertPretrainingConfig, AVHubertEncoder
 from avhubert.avhubert import AVHubertConfig
