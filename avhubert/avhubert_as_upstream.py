@@ -113,8 +113,8 @@ class AVHubertEncoder(nn.Module):
     
     def forward(self, source):
         # source should only include video
-        feature_out, mask = self.avhubert_model.extract_finetune(source)  # (bs, inlen/4, attention_dim)
-        melspec_out_chunked = self.linear_proj_layer(feature_out)  # (bs, inlen/4, 320)
-        return feature_out, melspec_out_chunked
+        encoder_out, feature, mask = self.avhubert_model.extract_finetune_with_feature(source)  # (bs, vidlen, 768)
+        melspec_out_chunked = self.linear_proj_layer(encoder_out)  # (bs, vidlen, 320)
+        return feature, melspec_out_chunked  # feature is still (bs, vidlen, 768)
 
     

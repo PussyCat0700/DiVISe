@@ -655,7 +655,7 @@ class AVHubertModel(BaseFairseqModel):
         feature = res["features"] if ret_conv else res["x"]
         return feature, res["padding_mask"]
 
-    def extract_finetune(self, source, padding_mask=None, mask=False, ret_conv=False, output_layer=None):
+    def extract_finetune_with_feature(self, source, padding_mask=None, mask=False, ret_conv=False, output_layer=None):
         src_audio, src_video = source['audio'], source['video']
         if mask and self.masking_type == 'input':
             src_video, mask_indices_video = self.apply_input_mask(src_video, padding_mask)
@@ -704,7 +704,7 @@ class AVHubertModel(BaseFairseqModel):
             layer=None if output_layer is None else output_layer - 1
         )
 
-        return x, padding_mask
+        return x, features, padding_mask
 
 
     def get_extra_losses(self, net_output):

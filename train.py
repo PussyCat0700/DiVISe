@@ -112,7 +112,6 @@ def train(rank, a, h, avhubert_config):
         if h.num_gpus > 1:
             train_sampler.set_epoch(epoch)
         pbar = tqdm(train_loader)
-        len_epoch = len(pbar)
         for batch in pbar:
             if rank == 0:
                 start_b = time.time()
@@ -200,7 +199,7 @@ def train(rank, a, h, avhubert_config):
                 if steps % a.summary_interval == 0:
                     sw.add_scalar("training/gen_loss_total", loss_gen_all, steps)
                     sw.add_scalar("training/mel_spec_error", mel_error, steps)
-                    sw.add_scalar("training/epoch", (epoch+1)*(steps/len_epoch), steps)
+                    sw.add_scalar("training/epoch", epoch, steps)
 
                 # Validation
                 if steps % a.validation_interval == 0 and steps != 0:
@@ -288,7 +287,8 @@ def main():
     else:
         pass
     if a.wandb:
-        wandb.init(project=a.checkpoint_path, sync_tensorboard=True)
+        proj_name = os.path.basename(a.checkpoint_path)
+        wandb.init(project=proj_name, sync_tensorboard=True)
     if h.num_gpus > 1:
         mp.spawn(train, nprocs=h.num_gpus, args=(a, h, avhubert_config))
     else:

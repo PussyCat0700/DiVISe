@@ -135,12 +135,12 @@ class AVHuBERTGenerator(nn.Module):
     def forward(self, video):
         input = {"video": video, "audio": None,}
         feature_visual, mel_generated_chunked = self.frontend_with_encoder(input)
-        # (bs, inlen/4, 320) -> (bs, inlen, num_mels=80)
+        # (bs, vidlen, 320) -> (bs, mellen=4*vidlen, num_mels=80)
         mel_generated = mel_generated_chunked.reshape(*mel_generated_chunked.shape[:-2], -1, self.num_mels)
-        # (bs, inlen, num_mels=80) -> (bs, 80, inlen)
+        # (bs, mellen, num_mels=80) -> (bs, 80, mellen)
         mel_generated = mel_generated.permute(0, 2, 1)
         wav_generated = self.generator(mel_generated)
-        return wav_generated, feature_visual
+        return wav_generated, feature_visual  # (bs, wavlen), (bs, vidlen, 768)
     
     def load_pretrained_avhubertmodel(self, pretrained_avhubert_path:str, map_location):
         avhubert_weight = torch.load(pretrained_avhubert_path, map_location=map_location)['model']
