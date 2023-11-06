@@ -41,8 +41,6 @@ def save_video(vid_outdir:str, vid_tensor:torch.Tensor, avhuberttaskconfig:AVHub
     with tempfile.TemporaryDirectory() as dirname:
         for i, img in enumerate(video):
             cv2.imwrite(os.path.join(dirname, str(i+1).zfill(4)+".png"), img)
-        import pdb
-        pdb.set_trace()
         cmd = [ffmpeg_path, "-i", os.path.join(dirname,'%0'+str(4)+'d.png'), "-y", "-crf", "20", vid_outdir, "-loglevel", "quiet"]
         cmd = ' '.join(cmd)
         os.system(cmd)
