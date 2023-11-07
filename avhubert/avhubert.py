@@ -15,7 +15,6 @@ import torch.nn as nn
 from dataclasses import dataclass, field
 from fairseq import utils
 from fairseq.data.data_utils import compute_mask_indices
-from fairseq.data.dictionary import Dictionary
 from fairseq.dataclass import ChoiceEnum, FairseqDataclass
 from fairseq.models import BaseFairseqModel, register_model
 from fairseq.models.wav2vec.wav2vec2 import (
@@ -318,7 +317,6 @@ class AVHubertModel(BaseFairseqModel):
     def __init__(
         self,
         cfg: AVHubertConfig,
-        dictionaries: List[Dictionary],
         **kwargs
     ) -> None:
         super().__init__()
@@ -387,22 +385,17 @@ class AVHubertModel(BaseFairseqModel):
         self.untie_final_proj = cfg.untie_final_proj
         if self.untie_final_proj:
             self.final_proj = nn.Linear(
-                cfg.encoder_embed_dim, final_dim * len(dictionaries)
+                cfg.encoder_embed_dim, final_dim  # hack. dictionary is a fake one. We don't need it in model.
             )
         else:
             self.final_proj = nn.Linear(cfg.encoder_embed_dim, final_dim)
 
         # modules below are not needed during fine-tuning
-        if any([d is None for d in dictionaries]):
-            logger.info(
-                "cannot find dictionary. assume will be used for fine-tuning"
-            )
-        else:
-            self.num_classes = [len(d) for d in dictionaries]
-            self.label_embs_concat = nn.Parameter(
-                torch.FloatTensor(sum(self.num_classes), final_dim)
-            )
-            nn.init.uniform_(self.label_embs_concat)
+        self.num_classes = 2004  # hack. dictionary is a fake one. We don't need it in model.
+        self.label_embs_concat = nn.Parameter(
+            torch.FloatTensor(self.num_classes, final_dim)  # hack. dictionary is a fake one. We don't need it in model.
+        )
+        nn.init.uniform_(self.label_embs_concat)
 
     def upgrade_state_dict_named(self, state_dict, name):
         """Upgrade a (possibly old) state dict for new versions of fairseq."""

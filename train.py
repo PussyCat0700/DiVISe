@@ -61,8 +61,6 @@ def train(rank, a, h, avhubert_config):
     steps = 0
     if a.avhubert_ckpt is not None:
         generator.load_pretrained_avhubertmodel(a.avhubert_ckpt, map_location=device)
-    if a.avhubertmel_ckpt is not None:
-        generator.load_pretrained_avhubertencoder(a.avhubertmel_ckpt, map_location=device)
     if cp_g is None or cp_do is None:
         state_dict_do = None
         last_epoch = -1

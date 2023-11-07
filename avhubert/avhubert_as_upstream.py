@@ -123,9 +123,8 @@ class AVHubertEncoder(nn.Module):
     }
     def __init__(self, cfg, num_mels, use_prosody, size="M") -> None:
         super().__init__()
-        dictionaries=[2004*[0]], # dictionary is a fake one. We don't need it in model.
         self.attention_dim = self.lookup_table[size]["attention_dim"]
-        self.avhubert_model = AVHubertModel(cfg=cfg, dictionaries=dictionaries)
+        self.avhubert_model = AVHubertModel(cfg=cfg)
         self.use_prosody = use_prosody
         if self.use_prosody:
             self.prosody_predictor = ProsodyPredictor()
