@@ -74,12 +74,12 @@ class ResBlock2(torch.nn.Module):
 
 
 class Generator(torch.nn.Module):
-    def __init__(self, h):
+    def __init__(self, h, conv_indim=80):
         super(Generator, self).__init__()
         self.h = h
         self.num_kernels = len(h.resblock_kernel_sizes)
         self.num_upsamples = len(h.upsample_rates)
-        self.conv_pre = weight_norm(Conv1d(80, h.upsample_initial_channel, 7, 1, padding=3))
+        self.conv_pre = weight_norm(Conv1d(conv_indim, h.upsample_initial_channel, 7, 1, padding=3))
         resblock = ResBlock1 if h.resblock == '1' else ResBlock2
 
         self.ups = nn.ModuleList()
@@ -99,6 +99,7 @@ class Generator(torch.nn.Module):
         self.conv_post.apply(init_weights)
 
     def forward(self, x):
+        x = x.transpose(-1, -2)
         x = self.conv_pre(x)
         for i in range(self.num_upsamples):
             x = F.leaky_relu(x, LRELU_SLOPE)
@@ -128,33 +129,27 @@ class Generator(torch.nn.Module):
 class AVHuBERTGenerator(nn.Module):
     def __init__(self, hifigenerator_config, avhubert_model_config) -> None:
         super().__init__()
-        self.num_mels = hifigenerator_config.num_mels
-        self.frontend_with_encoder = AVHubertEncoder(avhubert_model_config)
-        self.generator = Generator(hifigenerator_config)
+        self.frontend_with_encoder = AVHubertEncoder(avhubert_model_config, hifigenerator_config.num_mels, use_prosody=False)
+        attention_dim = self.frontend_with_encoder.attention_dim
+        self.generator = Generator(hifigenerator_config, attention_dim)
     
     def forward(self, video):
         input = {"video": video, "audio": None,}
-        feature_visual, mel_generated_chunked = self.frontend_with_encoder(input)
-        # (bs, vidlen, 320) -> (bs, mellen=4*vidlen, num_mels=80)
-        mel_generated = mel_generated_chunked.reshape(*mel_generated_chunked.shape[:-2], -1, self.num_mels)
+        encoder_out = self.frontend_with_encoder(input)
+        feature_visual = encoder_out["visual_feature"]  # TODO: feed into Generator.
+        wav_generated = self.generator(encoder_out["output"])  # generator takes in tensor shaped (bs, mellen, attention_dim)
+        mel_generated = encoder_out["melspec_out"]
         # (bs, mellen, num_mels=80) -> (bs, 80, mellen)
         mel_generated = mel_generated.permute(0, 2, 1)
-        wav_generated = self.generator(mel_generated)
-        return wav_generated, feature_visual  # (bs, wavlen), (bs, vidlen, 768)
+        return {"wav_generated":wav_generated,  # (bs, wavlen)
+                "melspec_out":mel_generated,  # (bs, mellen, 80)
+                "prosody": encoder_out["prosody"],
+                }
     
     def load_pretrained_avhubertmodel(self, pretrained_avhubert_path:str, map_location):
         avhubert_weight = torch.load(pretrained_avhubert_path, map_location=map_location)['model']
         #  label_embs_concat and final_proj will not be used in feature extraction.
         self.frontend_with_encoder.avhubert_model.load_state_dict(avhubert_weight)
-    
-    def load_pretrained_avhubertencoder(self, pretrained_path:str, map_location):
-        avhubert_weight = torch.load(pretrained_path, map_location=map_location)['state_dict']
-        torch_state_dict = {
-            k.replace('model.frontend_with_encoder.', '', 1) if k.startswith('model.frontend_with_encoder') else k: v
-            for k,v in avhubert_weight.items()
-        }
-        #  label_embs_concat and final_proj will not be used in feature extraction.
-        self.frontend_with_encoder.load_state_dict(torch_state_dict)
 
 
 class DiscriminatorP(torch.nn.Module):

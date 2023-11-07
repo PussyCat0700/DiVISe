@@ -23,7 +23,7 @@ def load_checkpoint(filepath, device):
 
 
 def get_mel(x):
-    return mel_spectrogram(x, h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax)
+    return mel_spectrogram(x, h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax)["spec"]
 
 
 def scan_checkpoint(cp_dir, prefix):

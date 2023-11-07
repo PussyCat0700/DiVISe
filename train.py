@@ -112,6 +112,7 @@ def train(rank, a, h, avhubert_config):
     mpd.train()
     msd.train()
     for epoch in range(max(0, last_epoch), a.training_epochs):
+        train_ratio = epoch / a.training_epochs  # [0, 1-1/a.training_epochs]
         if rank == 0:
             start = time.time()
             logging.info("Epoch: {}".format(epoch+1))
@@ -143,7 +144,9 @@ def train(rank, a, h, avhubert_config):
             y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
             y = y.unsqueeze(1)
 
-            y_g_hat, feature_visual = generator(avhubert_source_batch["video"].to(device))
+            generator_out = generator(avhubert_source_batch["video"].to(device))
+            y_g_hat = generator_out["wav_generated"]
+            y_g_avhubert_mel = generator_out["melspec_out"]
             y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size,
                                           h.fmin, h.fmax_for_loss)
 
@@ -167,6 +170,10 @@ def train(rank, a, h, avhubert_config):
 
             # L1 Mel-Spectrogram Loss
             loss_mel = F.l1_loss(y_mel, y_g_hat_mel) * 45
+            # Another L1 Mel-Spectrogram Loss from AV-HuBERT Generator itself.
+            alpha_avhubert = 0 if train_ratio>1/5 else -5*train_ratio+1  # 1.0 if ratio==0, 0.0 if ratio==1/5
+            alpha_avhubert = h.base_alpha_avhubert*alpha_avhubert
+            loss_mel_avhubert = F.l1_loss(y_mel, y_g_avhubert_mel) * alpha_avhubert
 
             y_df_hat_r, y_df_hat_g, fmap_f_r, fmap_f_g = mpd(y, y_g_hat)
             y_ds_hat_r, y_ds_hat_g, fmap_s_r, fmap_s_g = msd(y, y_g_hat)
@@ -174,7 +181,7 @@ def train(rank, a, h, avhubert_config):
             loss_fm_s = feature_loss(fmap_s_r, fmap_s_g)
             loss_gen_f, losses_gen_f = generator_loss(y_df_hat_g)
             loss_gen_s, losses_gen_s = generator_loss(y_ds_hat_g)
-            loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel
+            loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel + loss_mel_avhubert
 
             loss_gen_all.backward()
             optim_g.step()
@@ -183,10 +190,11 @@ def train(rank, a, h, avhubert_config):
                 # STDOUT logging
                 if steps % a.stdout_interval == 0:
                     with torch.no_grad():
-                        mel_error = F.l1_loss(y_mel, y_g_hat_mel).item()
+                        mel_error_generator = F.l1_loss(y_mel, y_g_hat_mel).item()
+                        mel_error_avhubert = F.l1_loss(y_mel, y_g_avhubert_mel).item()
 
                     pbar.set_description('Epoch: {:d}, Gen Loss Total : {:4.3f}, Mel-Spec. Error : {:4.3f}, s/b : {:4.3f}'.
-                          format(epoch, loss_gen_all, mel_error, time.time() - start_b))
+                          format(epoch, loss_gen_all, mel_error_generator, time.time() - start_b))
 
                 # checkpointing
                 if steps % a.checkpoint_interval == 0 and steps != 0:
@@ -205,14 +213,19 @@ def train(rank, a, h, avhubert_config):
                 # Tensorboard summary logging
                 if steps % a.summary_interval == 0:
                     sw.add_scalar("training/gen_loss_total", loss_gen_all, steps)
-                    sw.add_scalar("training/mel_spec_error", mel_error, steps)
+                    sw.add_scalar("training/mel_spec_error_generator", mel_error_generator, steps)
+                    sw.add_scalar("training/mel_spec_error_avhubert", mel_error_avhubert)
                     sw.add_scalar("training/epoch", epoch, steps)
+                    sw.add_scalar("training/alpha_avhubert", alpha_avhubert, steps)
 
                 # Validation
                 if steps % a.validation_interval == 0 and steps != 0:
                     generator.eval()
                     torch.cuda.empty_cache()
-                    val_err_tot = 0
+                    val_err_tot = {
+                        "mel_spec_error_generator": 0,
+                        "mel_spec_error_avhubert": 0,
+                    }
                     with torch.no_grad():
                         pbar2 = tqdm(validation_loader, desc="Validation in progress...")
                         for j, batch in enumerate(pbar2):
@@ -222,11 +235,14 @@ def train(rank, a, h, avhubert_config):
                                                 h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax,
                                                 center=False)
                             y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
-                            y_g_hat, feature_visual = generator(avhubert_source_batch["video"].to(device))
+                            generator_out = generator(avhubert_source_batch["video"].to(device))
+                            y_g_hat = generator_out["wav_generated"]
+                            y_g_avhubert_mel = generator_out["melspec_out"]
                             y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate,
                                                           h.hop_size, h.win_size,
                                                           h.fmin, h.fmax_for_loss)
-                            val_err_tot += F.l1_loss(y_mel, y_g_hat_mel).item()
+                            val_err_tot["mel_spec_error_generator"] += F.l1_loss(y_mel, y_g_hat_mel).item()
+                            val_err_tot["mel_spec_error_avhubert"] += F.l1_loss(y_mel, y_g_avhubert_mel).item()
 
                             if j <= 4:
                                 text = batch["target"]
@@ -242,8 +258,9 @@ def train(rank, a, h, avhubert_config):
                                 sw.add_figure('generated/y_hat_spec_{}'.format(j),
                                               plot_spectrogram(y_hat_spec.squeeze(0).cpu().numpy()), steps)
 
-                        val_err = val_err_tot / (j+1)
-                        sw.add_scalar("validation/mel_spec_error", val_err, steps)
+                        for val_err_key, val_err_term in val_err_tot.items():
+                            val_err = val_err_term / (j+1)
+                            sw.add_scalar(f"validation/{val_err_key}", val_err, steps)
 
                     generator.train()
 
@@ -257,6 +274,7 @@ def train(rank, a, h, avhubert_config):
 
 
 def main():
+    
     logging.info('Initializing Training Process..')
 
     parser = argparse.ArgumentParser()
@@ -265,7 +283,6 @@ def main():
     parser.add_argument('--hifigan_config', default='conf/hifigan/video2speech_v1.json')
     parser.add_argument('--avhubert_config', default='conf/avhubert/base_avhubert.yaml')
     parser.add_argument('--avhubert_ckpt', help='if specified, will load pretrained weight onto AVHuBERTModel')
-    parser.add_argument('--avhubertmel_ckpt', help='if specified, will load weight for AVHuBERTEncoder(mel generator)')
     parser.add_argument('--training_epochs', default=100, type=int)
     parser.add_argument('--stdout_interval', default=5, type=int)
     parser.add_argument('--checkpoint_interval', default=37383, type=int)

@@ -6,6 +6,9 @@ from dataclasses import dataclass, field
 from fairseq.dataclass.configs import FairseqDataclass
 from typing import Dict, List, Optional, Tuple
 from omegaconf import MISSING, II
+from prosody_predictor.predictor import ProsodyPredictor
+
+from pytorch_backend.transformer.encoder import ConformerEncoder
 
 @dataclass
 class AVHubertPretrainingConfig(FairseqDataclass):
@@ -106,16 +109,48 @@ class AVHubertPretrainingConfig(FairseqDataclass):
     fine_tuning: bool = field(default=False, metadata={"help": "set to true if fine-tuning AV-Hubert"})
 
 class AVHubertEncoder(nn.Module):
-    def __init__(self, cfg) -> None:
+    # should be consistent with conformer's setting.
+    lookup_table = {
+        "S":{
+            "attention_dim":144,
+        },
+        "M":{
+            "attention_dim":256,
+        },
+        "L":{
+            "attention_dim":512,
+        }
+    }
+    def __init__(self, cfg, num_mels, use_prosody, size="M") -> None:
         super().__init__()
         dictionaries=[2004*[0]], # dictionary is a fake one. We don't need it in model.
+        self.attention_dim = self.lookup_table[size]["attention_dim"]
         self.avhubert_model = AVHubertModel(cfg=cfg, dictionaries=dictionaries)
-        self.linear_proj_layer = torch.nn.Linear(768, 320)
+        self.use_prosody = use_prosody
+        if self.use_prosody:
+            self.prosody_predictor = ProsodyPredictor()
+        self.conformer_encoder = ConformerEncoder(size)
+        self.avhubert2downstream = torch.nn.Linear(768, self.attention_dim*4)
+        self.attention2mel = torch.nn.Linear(self.attention_dim, num_mels)
     
     def forward(self, source):
         # source should only include video
         encoder_out, feature, mask = self.avhubert_model.extract_finetune_with_feature(source)  # (bs, vidlen, 768)
-        melspec_out_chunked = self.linear_proj_layer(encoder_out)  # (bs, vidlen, 320)
-        return feature, melspec_out_chunked  # feature is still (bs, vidlen, 768)
+        encoder_out = self.avhubert2downstream(encoder_out)  # (bs, vidlen, attention_dim*4)
+        
+        # (bs, vidlen, attention_dim*4) -> (bs, mellen=4*vidlen, attention_dim)
+        encoder_out = encoder_out.reshape(*encoder_out.shape[:-2], -1, self.attention_dim)
+        if self.use_prosody:
+            prosody_info = self.prosody_predictor(encoder_out)  # (bs, mellen, attention_dim)
+            encoder_out = prosody_info['output']
+        
+        melspec_out_chunked = self.attention2mel(encoder_out)  # (bs, mellen, 80)
+        encoder_out = self.conformer_encoder(encoder_out)
+        
+        return {"visual_feature":feature,  # feature is still (bs, vidlen, 768)
+                "melspec_out":melspec_out_chunked,  # (bs, mellen, 80)
+                "prosody": prosody_info if self.use_prosody else None,
+                "output": encoder_out,  # (bs, mellen, attention_dim)
+                }  
 
     
