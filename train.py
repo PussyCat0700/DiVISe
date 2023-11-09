@@ -135,6 +135,8 @@ def train(rank, a, h, avhubert_config):
             """
             avhubert_source_batch = batch["net_input"]["source"]
             y = avhubert_source_batch["audio"].to(device)
+            wav_padding_mask = batch["net_input"]["padding_mask_wav"].to(device)
+            mel_padding_mask = batch["net_input"]["padding_mask_mel"].to(device)
             y_dict = mel_spectrogram_and_energy(y, h.n_fft, h.num_mels,
                                   h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax,
                                   center=False)
@@ -150,14 +152,14 @@ def train(rank, a, h, avhubert_config):
                 def normalize_prosody(x):
                     return (x - x.mean(dim=-1, keepdim=True))/x.std(dim=-1, keepdim=True)
                 energy_targets = y_dict["energy"].to(device)
-                pitch_targets = pitch(y, 'interpolate', h.sampling_rate, h.hop_size).to(device)
+                pitch_targets = pitch(y, wav_padding_mask, 'interpolate', h.sampling_rate, h.hop_size).to(device)
                 energy_targets = normalize_prosody(energy_targets)
                 pitch_targets = normalize_prosody(pitch_targets)
                 pitch_predictions = generator_out["prosody"]["pitch_pred"]
                 energy_predictions = generator_out["prosody"]["energy_pred"]
-                # TODO: add mask see https://github.com/ming024/FastSpeech2/blob/d4e79eb52e8b01d24703b2dfc0385544092958f3/model/loss.py#L5
-                pitch_loss = F.mse_loss(pitch_predictions, pitch_targets)
-                energy_loss = F.mse_loss(energy_predictions, energy_targets)
+                
+                pitch_loss = F.mse_loss(pitch_predictions.masked_select(~mel_padding_mask), pitch_targets.masked_select(~mel_padding_mask))
+                energy_loss = F.mse_loss(energy_predictions.masked_select(~mel_padding_mask), energy_targets.masked_select(~mel_padding_mask))
             
             y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size,
                                           h.fmin, h.fmax_for_loss)
@@ -181,11 +183,11 @@ def train(rank, a, h, avhubert_config):
             optim_g.zero_grad()
 
             # L1 Mel-Spectrogram Loss
-            loss_mel = F.l1_loss(y_mel, y_g_hat_mel) * 45
+            loss_mel = F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_hat_mel.masked_select(~mel_padding_mask.unsqueeze(1))) * 45
             # Another L1 Mel-Spectrogram Loss from AV-HuBERT Generator itself.
             alpha_avhubert = 0 if train_ratio>1/5 else -5*train_ratio+1  # 1.0 if ratio==0, 0.0 if ratio==1/5
             alpha_avhubert = h.base_alpha_avhubert*alpha_avhubert
-            loss_mel_avhubert = F.l1_loss(y_mel, y_g_avhubert_mel) * alpha_avhubert
+            loss_mel_avhubert = F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_avhubert_mel.masked_select(~mel_padding_mask.unsqueeze(1))) * alpha_avhubert
 
             y_df_hat_r, y_df_hat_g, fmap_f_r, fmap_f_g = mpd(y, y_g_hat)
             y_ds_hat_r, y_ds_hat_g, fmap_s_r, fmap_s_g = msd(y, y_g_hat)

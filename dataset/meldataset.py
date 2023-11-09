@@ -47,7 +47,7 @@ def spectral_de_normalize_torch(magnitudes):
 mel_basis = {}
 hann_window = {}
 
-
+# TODO: Do we also need to apply wav padding mask before wav is transformed to mel-spectrogram?
 def mel_spectrogram(*args, **kwargs):
     return mel_spectrogram_and_energy(*args, **kwargs)["spec"]
 
@@ -79,15 +79,17 @@ def mel_spectrogram_and_energy(y, n_fft, num_mels, sampling_rate, hop_size, win_
     return {"spec":spec,
             "energy":energy,}
 
-def pitch(wav_batch:torch.Tensor, mode='interpolate', sampling_rate=16000, hop_length=160):
+def pitch(wav_batch:torch.Tensor, wav_padding_masks:torch.Tensor, mode='interpolate', sampling_rate=16000, hop_length=160):
     assert mode in ['interpolate', ]
     wav_batch = wav_batch.squeeze().cpu().numpy()
     ret = []
-    for wav in wav_batch:
+    for (wav, padding_mask) in zip(wav_batch, wav_padding_masks):
+        len_wav = sum(~padding_mask)
+        wav = wav[:len_wav]
         wav = pitch_single(wav, mode, sampling_rate, hop_length)
-        wav = torch.FloatTensor(wav).unsqueeze(dim=0)
+        wav = torch.FloatTensor(wav)
         ret.append(wav)
-    ret = torch.concat(ret, dim=0)
+    ret = torch.nn.utils.rnn.pad_sequence(ret, batch_first=True)
     return ret
 
 def pitch_single(wav, mode, sampling_rate=16000, hop_length=160):

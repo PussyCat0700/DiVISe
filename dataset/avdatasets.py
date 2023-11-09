@@ -299,7 +299,7 @@ class AVHubertDataset(FairseqDataset):
         if video_source is not None:
             video_size = func(video_sizes, self.max_video_sample_size)
             video_starts = [int(second_start*self.sr_video) for second_start in second_starts]
-            collated_videos, padding_mask, video_starts = self.collater_video(video_source, video_size, video_starts)
+            collated_videos, padding_mask_mel, video_starts = self.collater_video_with_mel_mask(video_source, video_size, video_starts)
         else:
             collated_videos = None
         targets_by_label = [
@@ -308,7 +308,7 @@ class AVHubertDataset(FairseqDataset):
         ]
         targets_list, lengths_list, ntokens_list = self.collater_label_text(targets_by_label)
         source = {"audio": collated_audios, "video": collated_videos}
-        net_input = {"source": source, "padding_mask": padding_mask}  # We will only use video's padding mask in forward and waveform is used as Ground-Truth.
+        net_input = {"source": source, "padding_mask_wav": padding_mask, "padding_mask_mel": padding_mask_mel,}  # padding_mask_wav is for waveform(16000Hz) and _mel for mel spectrogram(100Hz)
         batch = {
             "id": torch.LongTensor([s["id"] for s in samples]),
             "net_input": net_input,
@@ -325,11 +325,11 @@ class AVHubertDataset(FairseqDataset):
             batch["target_list"] = targets_list
         return batch
 
-    def collater_video(self, videos, video_size, video_starts=None):
+    def collater_video_with_mel_mask(self, videos, video_size, video_starts=None):
         video_feat_shape = list(videos[0].shape[1:])
         collated_videos = videos[0].new_zeros([len(videos), video_size]+video_feat_shape)
-        padding_mask = (
-            torch.BoolTensor(len(videos), video_size).fill_(False) # 
+        padding_mask_mel = (
+            torch.BoolTensor(len(videos), video_size*4).fill_(False) # A HARD-CODED 4x ratio!!!
         )
         start_known = video_starts is not None
         video_starts = [0 for _ in videos] if not start_known else video_starts
@@ -342,13 +342,13 @@ class AVHubertDataset(FairseqDataset):
                 collated_videos[i] = torch.cat(
                     [video, video.new_full([-diff]+video_feat_shape, 0.0)]
                 )
-                padding_mask[i, diff:] = True
+                padding_mask_mel[i, diff*4:] = True
             else:
                 collated_videos[i], video_starts[i] = self.crop_to_max_size(
                     video, video_size, video_starts[i] if start_known else None
                 )
         collated_videos = collated_videos.permute((0, 4, 1, 2, 3)).contiguous() # [B, T, H, W, C] -> [B, C, T, H, W]
-        return collated_videos, padding_mask, video_starts
+        return collated_videos, padding_mask_mel, video_starts
     
     def collater_wav(self, wavs, wav_size, wav_starts=None):
         collated_wavs = wavs[0].new_zeros([len(wavs), wav_size])  # [B, T]
