@@ -20,7 +20,7 @@ import torch.multiprocessing as mp
 from torch.distributed import init_process_group
 from torch.nn.parallel import DistributedDataParallel
 from env import AttrDict, build_env
-from dataset.meldataset import mel_spectrogram
+from dataset.meldataset import mel_spectrogram, mel_spectrogram_and_energy, pitch
 from models import AVHuBERTGenerator, MultiPeriodDiscriminator, MultiScaleDiscriminator, feature_loss, generator_loss,\
     discriminator_loss
 from utils import plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint
@@ -45,6 +45,7 @@ def train(rank, a, h, avhubert_config):
     
     generator = AVHuBERTGenerator(hifigenerator_config=h,
                                   avhubert_model_config=avhubert_config["model"], 
+                                  use_prosody=a.prosody,
                                   ).to(device)
     mpd = MultiPeriodDiscriminator().to(device)
     msd = MultiScaleDiscriminator().to(device)
@@ -88,7 +89,6 @@ def train(rank, a, h, avhubert_config):
 
     scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=h.lr_decay, last_epoch=last_epoch)
     scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=h.lr_decay, last_epoch=last_epoch)
-    # TODO
     trainset = load_dataset("train", avhubert_config["task"])
     train_loader, train_sampler = get_dataloader(trainset, 
                                                 batch_size=h.batch_size,
@@ -135,9 +135,10 @@ def train(rank, a, h, avhubert_config):
             """
             avhubert_source_batch = batch["net_input"]["source"]
             y = avhubert_source_batch["audio"].to(device)
-            y_mel = mel_spectrogram(y, h.n_fft, h.num_mels,
+            y_dict = mel_spectrogram_and_energy(y, h.n_fft, h.num_mels,
                                   h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax,
                                   center=False)
+            y_mel = y_dict["spec"]
             y = torch.autograd.Variable(y.to(device, non_blocking=True))
             y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
             y = y.unsqueeze(1)
@@ -145,6 +146,19 @@ def train(rank, a, h, avhubert_config):
             generator_out = generator(avhubert_source_batch["video"].to(device))
             y_g_hat = generator_out["wav_generated"]
             y_g_avhubert_mel = generator_out["melspec_out"]
+            if a.prosody:
+                def normalize_prosody(x):
+                    return (x - x.mean(dim=-1, keepdim=True))/x.std(dim=-1, keepdim=True)
+                energy_targets = y_dict["energy"].to(device)
+                pitch_targets = pitch(y, 'interpolate', h.sampling_rate, h.hop_size).to(device)
+                energy_targets = normalize_prosody(energy_targets)
+                pitch_targets = normalize_prosody(pitch_targets)
+                pitch_predictions = generator_out["prosody"]["pitch_pred"]
+                energy_predictions = generator_out["prosody"]["energy_pred"]
+                # TODO: add mask see https://github.com/ming024/FastSpeech2/blob/d4e79eb52e8b01d24703b2dfc0385544092958f3/model/loss.py#L5
+                pitch_loss = F.mse_loss(pitch_predictions, pitch_targets)
+                energy_loss = F.mse_loss(energy_predictions, energy_targets)
+            
             y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size,
                                           h.fmin, h.fmax_for_loss)
 
@@ -180,7 +194,8 @@ def train(rank, a, h, avhubert_config):
             loss_gen_f, losses_gen_f = generator_loss(y_df_hat_g)
             loss_gen_s, losses_gen_s = generator_loss(y_ds_hat_g)
             loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel + loss_mel_avhubert
-
+            if a.prosody:
+                loss_gen_all += pitch_loss + energy_loss
             loss_gen_all.backward()
             optim_g.step()
 
@@ -210,11 +225,16 @@ def train(rank, a, h, avhubert_config):
 
                 # Tensorboard summary logging
                 if steps % a.summary_interval == 0:
-                    sw.add_scalar("training/gen_loss_total", loss_gen_all, steps)
-                    sw.add_scalar("training/mel_spec_error_generator", mel_error_generator, steps)
-                    sw.add_scalar("training/mel_spec_error_avhubert", mel_error_avhubert)
-                    sw.add_scalar("training/epoch", epoch, steps)
-                    sw.add_scalar("training/alpha_avhubert", alpha_avhubert, steps)
+                    def log_training(tag, value):
+                        sw.add_scalar(f"training/{tag}", value, steps)
+                    log_training("gen_loss_total", loss_gen_all)
+                    log_training("mel_spec_error_generator", mel_error_generator)
+                    log_training("mel_spec_error_avhubert", mel_error_avhubert)
+                    if a.prosody:
+                        log_training("pitch_regression_mse", pitch_loss)
+                        log_training("energy_regression_mse", energy_loss)
+                    log_training("epoch", epoch)
+                    log_training("alpha_avhubert", alpha_avhubert)
 
                 # Validation
                 if steps % a.validation_interval == 0 and steps != 0:
@@ -276,8 +296,8 @@ def main():
     logging.info('Initializing Training Process..')
 
     parser = argparse.ArgumentParser()
-
-    parser.add_argument('--checkpoint_path', default='cp_hifigan')
+    default_ckpt_dir = 'cp_hifigan'
+    parser.add_argument('--checkpoint_path', default=default_ckpt_dir)
     parser.add_argument('--hifigan_config', default='conf/hifigan/video2speech_v1.json')
     parser.add_argument('--avhubert_config', default='conf/avhubert/base_avhubert.yaml')
     parser.add_argument('--avhubert_ckpt', help='if specified, will load pretrained weight onto AVHuBERTModel')
@@ -287,8 +307,13 @@ def main():
     parser.add_argument('--summary_interval', default=100, type=int)
     parser.add_argument('--validation_interval', default=37383, type=int)
     parser.add_argument('--wandb', action='store_true')
+    parser.add_argument('--no_prosody', action='store_true')
 
     a = parser.parse_args()
+    a.prosody = not a.no_prosody
+    if a.checkpoint_path == default_ckpt_dir:
+        logging.warning(f"You're using default checkpoint dir {default_ckpt_dir}.\n"+\
+            " This should not happen in serious runs as checkpoint dir is likely overwritten with runs in default args.")
 
     with open(a.hifigan_config) as f:
         data = f.read()

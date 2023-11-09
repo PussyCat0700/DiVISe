@@ -8,6 +8,7 @@ from librosa.util import normalize
 from scipy.io.wavfile import read
 from librosa.filters import mel as librosa_mel_fn
 import pyworld as pw
+from scipy.interpolate import interp1d
 
 MAX_WAV_VALUE = 32768.0
 
@@ -78,8 +79,18 @@ def mel_spectrogram_and_energy(y, n_fft, num_mels, sampling_rate, hop_size, win_
     return {"spec":spec,
             "energy":energy,}
 
+def pitch(wav_batch:torch.Tensor, mode='interpolate', sampling_rate=16000, hop_length=160):
+    assert mode in ['interpolate', ]
+    wav_batch = wav_batch.squeeze().cpu().numpy()
+    ret = []
+    for wav in wav_batch:
+        wav = pitch_single(wav, mode, sampling_rate, hop_length)
+        wav = torch.FloatTensor(wav).unsqueeze(dim=0)
+        ret.append(wav)
+    ret = torch.concat(ret, dim=0)
+    return ret
 
-def pitch(wav, sampling_rate=16000, hop_length=160):
+def pitch_single(wav, mode, sampling_rate=16000, hop_length=160):
     # See FastSpeech 2's preprocessor.py
     pitch, t = pw.dio(
         wav.astype(np.float64),
@@ -87,6 +98,18 @@ def pitch(wav, sampling_rate=16000, hop_length=160):
         frame_period=hop_length / sampling_rate * 1000,  # 160/16000*1000=10
     )
     pitch = pw.stonemask(wav.astype(np.float64), pitch, t, sampling_rate)
+    expected_length = len(wav) // hop_length
+    pitch = pitch[:expected_length]
+    if mode == 'interpolate':
+        nonzero_ids = np.where(pitch != 0)[0]
+        interp_fn = interp1d(
+            nonzero_ids,
+            pitch[nonzero_ids],
+            fill_value=(pitch[nonzero_ids[0]], pitch[nonzero_ids[-1]]),
+            bounds_error=False,
+        )
+        pitch = interp_fn(np.arange(0, len(pitch)))
+    return pitch
 
 def get_dataset_filelist(a):
     with open(a.input_training_file, 'r', encoding='utf-8') as fi:

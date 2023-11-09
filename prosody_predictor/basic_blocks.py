@@ -8,7 +8,7 @@ class ConvBasicBlock(nn.Module):
             nn.ReLU(),
         )
     
-    def foward(self, x):
+    def forward(self, x):
         x = x.transpose(-1, -2)  # (B, T, C)->(B, C, T)
         y = self.block(x)
         y = y.transpose(-1, -2)  # (B, C, T)->(B, T, C)
@@ -32,9 +32,9 @@ class Predictor(nn.Module):
     def __init__(self, embed_dim=256, dropout_rate=0.1) -> None:
         super().__init__()
         self.blocks = nn.Sequential(
-            ConvBasicBlock(embed_dim, 4*embed_dim, 9),
+            ConvBasicBlock(embed_dim, embed_dim, 9),
             LNDropoutBasicBlock(embed_dim, dropout_rate),
-            ConvBasicBlock(4*embed_dim, embed_dim, 1),
+            ConvBasicBlock(embed_dim, embed_dim, 1),
             LNDropoutBasicBlock(embed_dim, dropout_rate),
             nn.Linear(embed_dim, 1),
         )
