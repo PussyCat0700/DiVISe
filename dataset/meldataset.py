@@ -78,7 +78,7 @@ def mel_spectrogram_and_energy(y, n_fft, num_mels, sampling_rate, hop_size, win_
 
     return {"spec":spec,
             "energy":energy,}
-
+# TODO: pitch should be computed prior to training. It will be a speed bottleneck otherwise.
 def pitch(wav_batch:torch.Tensor, wav_padding_masks:torch.Tensor, sampling_rate=16000, hop_length=160, mode=None):
     assert mode in ['interpolate', None]
     wav_batch = wav_batch.squeeze().cpu().numpy()
@@ -101,7 +101,12 @@ def pitch_single(wav, mode, sampling_rate=16000, hop_length=160):
     )
     pitch = pw.stonemask(wav.astype(np.float64), pitch, t, sampling_rate)
     expected_length = len(wav) // hop_length
-    pitch = pitch[:expected_length]
+    if len(pitch)>expected_length:
+        pitch = pitch[:expected_length]
+    elif len(pitch)<expected_length:
+        offset = expected_length-len(pitch)
+        padding = np.array(offset*[0])
+        pitch = np.append(pitch, padding)
     if mode is not None:
         if mode == 'interpolate':
             nonzero_ids = np.where(pitch != 0)[0]
