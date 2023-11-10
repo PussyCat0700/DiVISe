@@ -149,8 +149,8 @@ def train(rank, a, h, avhubert_config):
             y_g_hat = generator_out["wav_generated"]
             y_g_avhubert_mel = generator_out["melspec_out"]
             if a.prosody:
-                def normalize_prosody(x):
-                    return (x - x.mean(dim=-1, keepdim=True))/x.std(dim=-1, keepdim=True)
+                def normalize_prosody(x, m=1):
+                    return (x - x.mean(dim=-1, keepdim=True))/(m+x.std(dim=-1, keepdim=True))
                 energy_targets = y_dict["energy"].to(device)
                 pitch_targets = pitch(y, wav_padding_mask, h.sampling_rate, h.hop_size).to(device)
                 energy_targets = normalize_prosody(energy_targets)
