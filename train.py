@@ -152,7 +152,7 @@ def train(rank, a, h, avhubert_config):
                 def normalize_prosody(x):
                     return (x - x.mean(dim=-1, keepdim=True))/x.std(dim=-1, keepdim=True)
                 energy_targets = y_dict["energy"].to(device)
-                pitch_targets = pitch(y, wav_padding_mask, 'interpolate', h.sampling_rate, h.hop_size).to(device)
+                pitch_targets = pitch(y, wav_padding_mask, h.sampling_rate, h.hop_size).to(device)
                 energy_targets = normalize_prosody(energy_targets)
                 pitch_targets = normalize_prosody(pitch_targets)
                 pitch_predictions = generator_out["prosody"]["pitch_pred"]
