@@ -157,7 +157,15 @@ def train(rank, a, h, avhubert_config):
                 pitch_targets = normalize_prosody(pitch_targets)
                 pitch_predictions = generator_out["prosody"]["pitch_pred"]
                 energy_predictions = generator_out["prosody"]["energy_pred"]
-                
+                expected_length_prosody = pitch_predictions.shape[-1]
+                predicted_length_prosody = pitch_targets.shape[-1]
+                if predicted_length_prosody>expected_length_prosody:
+                    pitch_targets = pitch_targets[..., :expected_length_prosody]
+                elif predicted_length_prosody<expected_length_prosody:
+                    offset = expected_length_prosody-predicted_length_prosody
+                    padding = torch.zeros((pitch_targets.shape[0], offset), device=device)
+                    pitch_targets = torch.cat((pitch_targets, padding), dim=-1)
+
                 pitch_loss = F.mse_loss(pitch_predictions.masked_select(~mel_padding_mask), pitch_targets.masked_select(~mel_padding_mask))
                 energy_loss = F.mse_loss(energy_predictions.masked_select(~mel_padding_mask), energy_targets.masked_select(~mel_padding_mask))
             
