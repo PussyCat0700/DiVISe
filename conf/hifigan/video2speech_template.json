@@ -29,7 +29,8 @@
     "fmax": 8000,
     "fmax_for_loss": null,
 
-    "num_workers": 4,
+    "save_on_metric": "mel_spec_error_generator",
+    "lower_the_better": true,
 
     "dist_config": {
         "dist_backend": "nccl",

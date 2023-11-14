@@ -49,6 +49,8 @@ def train(rank, a, h, avhubert_config):
                                   ).to(device)
     mpd = MultiPeriodDiscriminator().to(device)
     msd = MultiScaleDiscriminator().to(device)
+    metrics = {}
+    best_metrics = None
 
     if rank == 0:
         logging.info('model loaded.')
@@ -73,6 +75,7 @@ def train(rank, a, h, avhubert_config):
         msd.load_state_dict(state_dict_do['msd'])
         steps = state_dict_do['steps'] + 1
         last_epoch = state_dict_do['epoch']
+        best_metrics = state_dict_do['metrics']
 
     if h.num_gpus > 1:
         generator = DistributedDataParallel(generator, device_ids=[rank]).to(device)
@@ -92,7 +95,7 @@ def train(rank, a, h, avhubert_config):
     trainset = load_dataset("train", avhubert_config["task"])
     train_loader, train_sampler = get_dataloader(trainset, 
                                                 batch_size=h.batch_size,
-                                                num_workers=h.num_workers, 
+                                                num_workers=h.num_gpus, 
                                                 dist_sampler=h.num_gpus > 1,
                                                 shuffle=True)
 
@@ -100,17 +103,17 @@ def train(rank, a, h, avhubert_config):
         validset = load_dataset("valid", avhubert_config["task"])
         validation_loader, _ = get_dataloader(validset, 
                                             batch_size=h.batch_size,
-                                            num_workers=h.num_workers, 
+                                            num_workers=h.num_gpus, 
                                             dist_sampler=h.num_gpus > 1, 
                                             shuffle=False)
 
         sw = SummaryWriter(os.path.join(a.checkpoint_path, 'logs'))
 
-    generator.train()
     mpd.train()
     msd.train()
     for epoch in range(max(0, last_epoch), a.training_epochs):
         train_ratio = epoch / a.training_epochs  # [0, 1-1/a.training_epochs]
+        generator.train()
         if rank == 0:
             start = time.time()
             logging.info("Epoch: {}".format(epoch+1))
@@ -219,20 +222,6 @@ def train(rank, a, h, avhubert_config):
                     pbar.set_description('Epoch: {:d}, Gen Loss Total : {:4.3f}, Mel-Spec. Error : {:4.3f}, s/b : {:4.3f}'.
                           format(epoch, loss_gen_all, mel_error_generator, time.time() - start_b))
 
-                # checkpointing
-                if steps % a.checkpoint_interval == 0 and steps != 0:
-                    checkpoint_path = "{}/g_{:08d}".format(a.checkpoint_path, steps)
-                    save_checkpoint(checkpoint_path,
-                                    {'generator': (generator.module if h.num_gpus > 1 else generator).state_dict()})
-                    checkpoint_path = "{}/do_{:08d}".format(a.checkpoint_path, steps)
-                    save_checkpoint(checkpoint_path, 
-                                    {'mpd': (mpd.module if h.num_gpus > 1
-                                                         else mpd).state_dict(),
-                                     'msd': (msd.module if h.num_gpus > 1
-                                                         else msd).state_dict(),
-                                     'optim_g': optim_g.state_dict(), 'optim_d': optim_d.state_dict(), 'steps': steps,
-                                     'epoch': epoch})
-
                 # Tensorboard summary logging
                 if steps % a.summary_interval == 0:
                     def log_training(tag, value):
@@ -246,59 +235,91 @@ def train(rank, a, h, avhubert_config):
                     log_training("epoch", epoch)
                     log_training("alpha_avhubert", alpha_avhubert)
 
-                # Validation
-                if steps % a.validation_interval == 0 and steps != 0:
-                    generator.eval()
-                    torch.cuda.empty_cache()
-                    val_err_tot = {
-                        "mel_spec_error_generator": 0,
-                        "mel_spec_error_avhubert": 0,
-                    }
-                    with torch.no_grad():
-                        pbar2 = tqdm(validation_loader, desc="Validation in progress...")
-                        for j, batch in enumerate(pbar2):
-                            avhubert_source_batch = batch["net_input"]["source"]
-                            y = avhubert_source_batch["audio"].to(device)
-                            y_mel = mel_spectrogram(y, h.n_fft, h.num_mels,
-                                                h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax,
-                                                center=False)
-                            y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
-                            generator_out = generator(avhubert_source_batch["video"].to(device))
-                            y_g_hat = generator_out["wav_generated"]
-                            y_g_avhubert_mel = generator_out["melspec_out"]
-                            y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate,
-                                                          h.hop_size, h.win_size,
-                                                          h.fmin, h.fmax_for_loss)
-                            val_err_tot["mel_spec_error_generator"] += F.l1_loss(y_mel, y_g_hat_mel).item()
-                            val_err_tot["mel_spec_error_avhubert"] += F.l1_loss(y_mel, y_g_avhubert_mel).item()
-
-                            if j <= 4:
-                                text = batch["target"]
-                                if steps // a.validation_interval == 1:
-                                    sw.add_audio('gt/y_{}'.format(j), y[0], steps, h.sampling_rate)
-                                    sw.add_text('gt/y_text_{}'.format(j), text[0], steps)
-                                    sw.add_figure('gt/y_spec_{}'.format(j), plot_spectrogram(y_mel[0].cpu()), steps)
-
-                                sw.add_audio('generated/y_hat_{}'.format(j), y_g_hat[0], steps, h.sampling_rate)
-                                y_hat_spec = mel_spectrogram(y_g_hat[0].cpu(), h.n_fft, h.num_mels,
-                                                             h.sampling_rate, h.hop_size, h.win_size,
-                                                             h.fmin, h.fmax)
-                                sw.add_figure('generated/y_hat_spec_{}'.format(j),
-                                              plot_spectrogram(y_hat_spec.squeeze(0).cpu().numpy()), steps)
-
-                        for val_err_key, val_err_term in val_err_tot.items():
-                            val_err = val_err_term / (j+1)
-                            sw.add_scalar(f"validation/{val_err_key}", val_err, steps)
-
-                    generator.train()
-
             steps += 1
-
         scheduler_g.step()
         scheduler_d.step()
         
         if rank == 0:
             logging.info('Time taken for epoch {} is {} sec\n'.format(epoch + 1, int(time.time() - start)))
+        # End of a train epoch
+        # Validation
+        if rank == 0:
+            generator.eval()
+            torch.cuda.empty_cache()
+            val_err_tot = {
+                "mel_spec_error_generator": 0,
+                "mel_spec_error_avhubert": 0,
+            }
+            with torch.no_grad():
+                pbar2 = tqdm(validation_loader, desc="Validation in progress...")
+                for j, batch in enumerate(pbar2):
+                    avhubert_source_batch = batch["net_input"]["source"]
+                    y = avhubert_source_batch["audio"].to(device)
+                    y_mel = mel_spectrogram(y, h.n_fft, h.num_mels,
+                                        h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax,
+                                        center=False)
+                    y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
+                    generator_out = generator(avhubert_source_batch["video"].to(device))
+                    y_g_hat = generator_out["wav_generated"]
+                    y_g_avhubert_mel = generator_out["melspec_out"]
+                    y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate,
+                                                    h.hop_size, h.win_size,
+                                                    h.fmin, h.fmax_for_loss)
+                    val_err_tot["mel_spec_error_generator"] += F.l1_loss(y_mel, y_g_hat_mel).item()
+                    val_err_tot["mel_spec_error_avhubert"] += F.l1_loss(y_mel, y_g_avhubert_mel).item()
+
+                    if j <= 4:
+                        # save first few validation samples
+                        text = batch["target"]
+                        if epoch == 0:
+                            # ground truth will only be saved once
+                            sw.add_audio('gt/y_{}'.format(j), y[0], steps, h.sampling_rate)
+                            sw.add_text('gt/y_text_{}'.format(j), text[0], steps)
+                            sw.add_figure('gt/y_spec_{}'.format(j), plot_spectrogram(y_mel[0].cpu()), steps)
+
+                        sw.add_audio('generated/y_hat_{}'.format(j), y_g_hat[0], steps, h.sampling_rate)
+                        y_hat_spec = mel_spectrogram(y_g_hat[0].cpu(), h.n_fft, h.num_mels,
+                                                        h.sampling_rate, h.hop_size, h.win_size,
+                                                        h.fmin, h.fmax)
+                        sw.add_figure('generated/y_hat_spec_{}'.format(j),
+                                        plot_spectrogram(y_hat_spec.squeeze(0).cpu().numpy()), steps)
+
+                for val_err_key, val_err_term in val_err_tot.items():
+                    val_err = val_err_term / (j+1)
+                    sw.add_scalar(f"validation/{val_err_key}", val_err, steps)
+                    metrics[val_err_key] = val_err
+                    if best_metrics is None:
+                        best_metrics = metrics
+                
+                # checkpointing
+                def save_all_checkpoints(save_title, remove_title=None):
+                    checkpoint_path = "{}/g_{}".format(a.checkpoint_path, save_title)
+                    prev_checkpoint_path_g = "{}/g_{}".format(a.checkpoint_path, remove_title) if remove_title else None
+                    save_checkpoint(checkpoint_path,
+                                    {'generator': (generator.module if h.num_gpus > 1 else generator).state_dict()},
+                                    )
+                    checkpoint_path = "{}/do_{}".format(a.checkpoint_path, save_title)
+                    prev_checkpoint_path_do = "{}/g_{}".format(a.checkpoint_path, remove_title) if remove_title else None
+                    save_checkpoint(checkpoint_path, 
+                                    {'mpd': (mpd.module if h.num_gpus > 1
+                                                        else mpd).state_dict(),
+                                    'msd': (msd.module if h.num_gpus > 1
+                                                        else msd).state_dict(),
+                                    'optim_g': optim_g.state_dict(), 'optim_d': optim_d.state_dict(), 'steps': steps,
+                                    'epoch': epoch, 'metrics': metrics,},
+                                    )
+                    for filepath_to_remove in [prev_checkpoint_path_do, prev_checkpoint_path_g]:
+                        if filepath_to_remove:
+                            if os.path.exists(filepath_to_remove):
+                                os.remove(filepath_to_remove)
+                                logging.info(f'removed {filepath_to_remove}')
+                            else:
+                                logging.warning(f'{filepath_to_remove} does not exist and removing is cancelled.')
+                save_all_checkpoints(epoch, remove_title=epoch-1 if epoch>0 else None)
+                if h.lower_the_better and metrics[h.save_on_metric] <= best_metrics[h.save_on_metric] \
+                    or not h.lower_the_better and metrics[h.save_on_metric] >= best_metrics[h.save_on_metric]:
+                    save_all_checkpoints("best")
+                    best_metrics = metrics
 
 
 def main():
@@ -313,9 +334,7 @@ def main():
     parser.add_argument('--avhubert_ckpt', help='if specified, will load pretrained weight onto AVHuBERTModel')
     parser.add_argument('--training_epochs', default=100, type=int)
     parser.add_argument('--stdout_interval', default=5, type=int)
-    parser.add_argument('--checkpoint_interval', default=37383, type=int)
     parser.add_argument('--summary_interval', default=100, type=int)
-    parser.add_argument('--validation_interval', default=37383, type=int)
     parser.add_argument('--wandb', action='store_true')
     parser.add_argument('--no_prosody', action='store_true')
 
@@ -339,8 +358,10 @@ def main():
     if torch.cuda.is_available():
         torch.cuda.manual_seed(h.seed)
         h.num_gpus = torch.cuda.device_count()
-        h.batch_size = int(h.batch_size / h.num_gpus)
+        # h.batch_size = int(h.batch_size / h.num_gpus)
+        h.total_batch_size = h.batch_size * h.num_gpus
         logging.info(f'Batch size per GPU :{h.batch_size}')
+        logging.info(f"Total batch size on all GPUs :{h.total_batch_size}")
     else:
         pass
     if a.wandb:
