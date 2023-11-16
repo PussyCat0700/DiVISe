@@ -133,9 +133,9 @@ class AVHuBERTGenerator(nn.Module):
         attention_dim = self.frontend_with_encoder.attention_dim
         self.generator = Generator(hifigenerator_config, attention_dim)
     
-    def forward(self, video):
-        input = {"video": video, "audio": None,}
-        encoder_out = self.frontend_with_encoder(input)
+    def forward(self, video, prosody_targets):
+        avhubert_input = {"video": video, "audio": None,}
+        encoder_out = self.frontend_with_encoder(avhubert_input, prosody_targets)
         feature_visual = encoder_out["visual_feature"]  # TODO: feed into Generator.
         wav_generated = self.generator(encoder_out["output"])  # generator takes in tensor shaped (bs, mellen, attention_dim)
         mel_generated = encoder_out["melspec_out"]

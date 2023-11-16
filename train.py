@@ -140,7 +140,6 @@ def train(rank, a, h, avhubert_config):
             """
             avhubert_source_batch = batch["net_input"]["source"]
             y = avhubert_source_batch["audio"].to(device)
-            wav_padding_mask = batch["net_input"]["padding_mask_wav"].to(device)
             mel_padding_mask = batch["net_input"]["padding_mask_mel"].to(device)
             y_dict = mel_spectrogram_and_energy(y, h.n_fft, h.num_mels,
                                   h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax,
@@ -149,10 +148,11 @@ def train(rank, a, h, avhubert_config):
             y = torch.autograd.Variable(y.to(device, non_blocking=True))
             y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
             y = y.unsqueeze(1)
-
-            generator_out = generator(avhubert_source_batch["video"].to(device))
-            y_g_hat = generator_out["wav_generated"]
-            y_g_avhubert_mel = generator_out["melspec_out"]
+            # keys are param names of forward func of ProsodyPredictor
+            prosody_target = {
+                "pitch_target":None,
+                "energy_target":None,
+            }
             if a.prosody:
                 def normalize_prosody(x, m=1):
                     return (x - x.mean(dim=-1, keepdim=True))/(m+x.std(dim=-1, keepdim=True))
@@ -160,6 +160,14 @@ def train(rank, a, h, avhubert_config):
                 pitch_targets = avhubert_source_batch["pitch"].to(device)
                 energy_targets = normalize_prosody(energy_targets)
                 pitch_targets = normalize_prosody(pitch_targets)
+                if a.real_prosody:
+                    # keys are param names of forward func of ProsodyPredictor
+                    prosody_target["pitch_target"] = pitch_targets
+                    prosody_target["energy_target"] = energy_targets
+            generator_out = generator(avhubert_source_batch["video"].to(device), prosody_target)
+            y_g_hat = generator_out["wav_generated"]
+            y_g_avhubert_mel = generator_out["melspec_out"]
+            if a.prosody:
                 pitch_predictions = generator_out["prosody"]["pitch_pred"]
                 energy_predictions = generator_out["prosody"]["energy_pred"]
 
@@ -288,12 +296,12 @@ def train(rank, a, h, avhubert_config):
                 # checkpointing
                 def save_all_checkpoints(save_title, remove_title=None):
                     checkpoint_path = "{}/g_{}".format(a.checkpoint_path, save_title)
-                    prev_checkpoint_path_g = "{}/g_{}".format(a.checkpoint_path, remove_title) if remove_title else None
+                    prev_checkpoint_path_g = "{}/g_{}".format(a.checkpoint_path, remove_title) if remove_title is not None else None
                     save_checkpoint(checkpoint_path,
                                     {'generator': (generator.module if h.num_gpus > 1 else generator).state_dict()},
                                     )
                     checkpoint_path = "{}/do_{}".format(a.checkpoint_path, save_title)
-                    prev_checkpoint_path_do = "{}/g_{}".format(a.checkpoint_path, remove_title) if remove_title else None
+                    prev_checkpoint_path_do = "{}/do_{}".format(a.checkpoint_path, remove_title) if remove_title is not None else None
                     save_checkpoint(checkpoint_path, 
                                     {'mpd': (mpd.module if h.num_gpus > 1
                                                         else mpd).state_dict(),
@@ -332,9 +340,11 @@ def main():
     parser.add_argument('--wandb', action='store_true')
     parser.add_argument('--no_prosody', action='store_true')
     parser.add_argument('--batch_size', type=int, default=8, help='per device batch size')
+    parser.add_argument('--predicted-prosody', action='store_true', help='if specified, will use predicted prosody instead of GT in training.')
 
     a = parser.parse_args()
     a.prosody = not a.no_prosody
+    a.real_prosody = not a.predicted_prosody
     if a.checkpoint_path == default_ckpt_dir:
         logging.warning(f"You're using default checkpoint dir {default_ckpt_dir}.\n"+\
             " This should not happen in serious runs as checkpoint dir is likely overwritten with runs in default args.")

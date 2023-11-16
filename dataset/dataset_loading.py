@@ -31,8 +31,10 @@ class AVHuBERTAdaptingCollater:
 
 def get_dataloader(dataset:AVHubertDataset, batch_size, shuffle, num_workers, dist_sampler=False, pin_memory=True):
     if dist_sampler:
-        sampler = DistributedSampler(dataset, shuffle=shuffle) if dist_sampler else None
+        sampler = DistributedSampler(dataset, shuffle=shuffle)
         shuffle = None  # sampler option is mutually exclusive with shuffle
+    else:
+        sampler = None
     collate_fn_adapter = AVHuBERTAdaptingCollater(dataset)
     loader = DataLoader(dataset, num_workers=num_workers, shuffle=shuffle,
                               sampler=sampler,
