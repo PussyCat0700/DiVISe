@@ -35,6 +35,9 @@ logging.basicConfig(
 logging.getLogger(__name__)
 
 def train(rank, a, h, avhubert_config):
+    if rank == 0 and a.wandb:
+        proj_name = os.path.basename(a.checkpoint_path)
+        wandb.init(project=proj_name, sync_tensorboard=True)
     if h.num_gpus > 1:
         init_process_group(backend=h.dist_config['dist_backend'], init_method=h.dist_config['dist_url'],
                            world_size=h.dist_config['world_size'] * h.num_gpus, rank=rank)
@@ -369,9 +372,6 @@ def main():
         logging.info(f"Total batch size on all GPUs :{a.total_batch_size}")
     else:
         pass
-    if a.wandb:
-        proj_name = os.path.basename(a.checkpoint_path)
-        wandb.init(project=proj_name, sync_tensorboard=True)
     if h.num_gpus > 1:
         mp.spawn(train, nprocs=h.num_gpus, args=(a, h, avhubert_config))
     else:
