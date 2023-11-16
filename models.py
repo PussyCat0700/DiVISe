@@ -99,7 +99,7 @@ class Generator(torch.nn.Module):
         self.conv_post.apply(init_weights)
 
     def forward(self, x):
-        x = x.transpose(-1, -2)
+        x = x.transpose(-1, -2).contiguous()
         x = self.conv_pre(x)
         for i in range(self.num_upsamples):
             x = F.leaky_relu(x, LRELU_SLOPE)
@@ -140,7 +140,7 @@ class AVHuBERTGenerator(nn.Module):
         wav_generated = self.generator(encoder_out["output"])  # generator takes in tensor shaped (bs, mellen, attention_dim)
         mel_generated = encoder_out["melspec_out"]
         # (bs, mellen, num_mels=80) -> (bs, 80, mellen)
-        mel_generated = mel_generated.permute(0, 2, 1)
+        mel_generated = mel_generated.permute(0, 2, 1).contiguous()
         return {"wav_generated":wav_generated,  # (bs, wavlen)
                 "melspec_out":mel_generated,  # (bs, mellen, 80)
                 "prosody": encoder_out["prosody"],

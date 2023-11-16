@@ -22,7 +22,7 @@ def save_wav_16khz(wav_outdir:str, wav:torch.Tensor):
     write(wav_outdir, 16_000, wav)
     
 def denormalize_vidtensor(vid_tensor:torch.Tensor, image_mean:float, image_std:float):
-    vid_tensor = vid_tensor.permute(1, 2, 3, 0)  # [T, H, W, C]
+    vid_tensor = vid_tensor.permute(1, 2, 3, 0).contiguous()  # [T, H, W, C]
     vid_tensor = vid_tensor*image_std+image_mean
     vid_tensor = vid_tensor*255+0.0
     return vid_tensor

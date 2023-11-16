@@ -79,6 +79,7 @@ def mel_spectrogram_and_energy(y, n_fft, num_mels, sampling_rate, hop_size, win_
     return {"spec":spec,
             "energy":energy,}
 # TODO: pitch should be computed prior to training. It will be a speed bottleneck otherwise.
+# TODO: How about trying out for Kaldi Pitch (beta)? @ https://carolineechen.github.io/audio/main/tutorials/audio_feature_extractions_tutorial.html#kaldi-pitch-beta
 def pitch(wav_batch:torch.Tensor, wav_padding_masks:torch.Tensor, sampling_rate=16000, hop_length=160, mode=None):
     assert mode in ['interpolate', None]
     wav_batch = wav_batch.squeeze().cpu().numpy()

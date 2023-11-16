@@ -20,7 +20,7 @@ import torch.multiprocessing as mp
 from torch.distributed import init_process_group
 from torch.nn.parallel import DistributedDataParallel
 from env import AttrDict, build_env
-from dataset.meldataset import mel_spectrogram, mel_spectrogram_and_energy, pitch
+from dataset.meldataset import mel_spectrogram, mel_spectrogram_and_energy
 from models import AVHuBERTGenerator, MultiPeriodDiscriminator, MultiScaleDiscriminator, feature_loss, generator_loss,\
     discriminator_loss
 from utils import plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint
@@ -78,7 +78,7 @@ def train(rank, a, h, avhubert_config):
         best_metrics = state_dict_do['metrics']
 
     if h.num_gpus > 1:
-        generator = DistributedDataParallel(generator, device_ids=[rank]).to(device)
+        generator = DistributedDataParallel(generator, device_ids=[rank], find_unused_parameters=True).to(device)
         mpd = DistributedDataParallel(mpd, device_ids=[rank]).to(device)
         msd = DistributedDataParallel(msd, device_ids=[rank]).to(device)
 
@@ -94,17 +94,19 @@ def train(rank, a, h, avhubert_config):
     scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=h.lr_decay, last_epoch=last_epoch)
     trainset = load_dataset("train", avhubert_config["task"])
     train_loader, train_sampler = get_dataloader(trainset, 
-                                                batch_size=h.batch_size,
+                                                batch_size=a.batch_size,
                                                 num_workers=h.num_gpus, 
                                                 dist_sampler=h.num_gpus > 1,
+                                                pin_memory=not h.num_gpus > 1,
                                                 shuffle=True)
 
     if rank == 0:
         validset = load_dataset("valid", avhubert_config["task"])
         validation_loader, _ = get_dataloader(validset, 
-                                            batch_size=h.batch_size,
+                                            batch_size=a.batch_size,
                                             num_workers=h.num_gpus, 
                                             dist_sampler=h.num_gpus > 1, 
+                                            pin_memory=not h.num_gpus > 1,
                                             shuffle=False)
 
         sw = SummaryWriter(os.path.join(a.checkpoint_path, 'logs'))
@@ -155,19 +157,11 @@ def train(rank, a, h, avhubert_config):
                 def normalize_prosody(x, m=1):
                     return (x - x.mean(dim=-1, keepdim=True))/(m+x.std(dim=-1, keepdim=True))
                 energy_targets = y_dict["energy"].to(device)
-                pitch_targets = pitch(y, wav_padding_mask, h.sampling_rate, h.hop_size).to(device)
+                pitch_targets = avhubert_source_batch["pitch"].to(device)
                 energy_targets = normalize_prosody(energy_targets)
                 pitch_targets = normalize_prosody(pitch_targets)
                 pitch_predictions = generator_out["prosody"]["pitch_pred"]
                 energy_predictions = generator_out["prosody"]["energy_pred"]
-                expected_length_prosody = pitch_predictions.shape[-1]
-                predicted_length_prosody = pitch_targets.shape[-1]
-                if predicted_length_prosody>expected_length_prosody:
-                    pitch_targets = pitch_targets[..., :expected_length_prosody]
-                elif predicted_length_prosody<expected_length_prosody:
-                    offset = expected_length_prosody-predicted_length_prosody
-                    padding = torch.zeros((pitch_targets.shape[0], offset), device=device)
-                    pitch_targets = torch.cat((pitch_targets, padding), dim=-1)
 
                 pitch_loss = F.mse_loss(pitch_predictions.masked_select(~mel_padding_mask), pitch_targets.masked_select(~mel_padding_mask))
                 energy_loss = F.mse_loss(energy_predictions.masked_select(~mel_padding_mask), energy_targets.masked_select(~mel_padding_mask))
@@ -337,6 +331,7 @@ def main():
     parser.add_argument('--summary_interval', default=100, type=int)
     parser.add_argument('--wandb', action='store_true')
     parser.add_argument('--no_prosody', action='store_true')
+    parser.add_argument('--batch_size', type=int, default=8, help='per device batch size')
 
     a = parser.parse_args()
     a.prosody = not a.no_prosody
@@ -358,10 +353,10 @@ def main():
     if torch.cuda.is_available():
         torch.cuda.manual_seed(h.seed)
         h.num_gpus = torch.cuda.device_count()
-        # h.batch_size = int(h.batch_size / h.num_gpus)
-        h.total_batch_size = h.batch_size * h.num_gpus
-        logging.info(f'Batch size per GPU :{h.batch_size}')
-        logging.info(f"Total batch size on all GPUs :{h.total_batch_size}")
+        # a.batch_size = int(a.batch_size / h.num_gpus)
+        a.total_batch_size = a.batch_size * h.num_gpus
+        logging.info(f'Batch size per GPU :{a.batch_size}')
+        logging.info(f"Total batch size on all GPUs :{a.total_batch_size}")
     else:
         pass
     if a.wandb:
