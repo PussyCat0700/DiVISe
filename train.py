@@ -264,7 +264,11 @@ def train(rank, a, h, avhubert_config):
                                         h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax,
                                         center=False)
                     y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
-                    generator_out = generator(avhubert_source_batch["video"].to(device))
+                    prosody_target = {
+                        "pitch_target":None,
+                        "energy_target":None,
+                    }
+                    generator_out = generator(avhubert_source_batch["video"].to(device), prosody_target)
                     y_g_hat = generator_out["wav_generated"]
                     y_g_avhubert_mel = generator_out["melspec_out"]
                     y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate,
