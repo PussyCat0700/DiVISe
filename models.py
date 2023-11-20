@@ -127,9 +127,9 @@ class Generator(torch.nn.Module):
         remove_weight_norm(self.conv_post)
     
 class AVHuBERTGenerator(nn.Module):
-    def __init__(self, hifigenerator_config, avhubert_model_config, use_prosody) -> None:
+    def __init__(self, hifigenerator_config, avhubert_model_config, prosody_minmax_dict) -> None:
         super().__init__()
-        self.frontend_with_encoder = AVHubertEncoder(avhubert_model_config, hifigenerator_config.num_mels, use_prosody=use_prosody)
+        self.frontend_with_encoder = AVHubertEncoder(avhubert_model_config, hifigenerator_config.num_mels, prosody_minmax_dict=prosody_minmax_dict)
         attention_dim = self.frontend_with_encoder.attention_dim
         self.generator = Generator(hifigenerator_config, attention_dim)
     

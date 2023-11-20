@@ -11,8 +11,8 @@ class ProsodyPredictor(nn.Module):
     https://github.com/ming024/FastSpeech2/blob/d4e79eb52e8b01d24703b2dfc0385544092958f3/model/modules.py#L17C19-L17C19
     """
     # TODO: check pitch/energy min/max for LRS3
-    def __init__(self, n_bins=256, encoder_hidden=256,
-                 pitch_min=65, pitch_max=700, energy_min=0.0, energy_max=300,
+    def __init__(self, pitch_min, pitch_max, energy_min, energy_max,
+                 n_bins=256, encoder_hidden=256,
                  ):
         super().__init__()
         self.pitch_predictor = Predictor()

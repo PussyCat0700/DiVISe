@@ -45,10 +45,15 @@ def train(rank, a, h, avhubert_config):
     torch.cuda.manual_seed(h.seed)
     torch.cuda.set_device(rank)  # A very strong boost. See https://github.com/jik876/hifi-gan/pull/25
     device = torch.device('cuda:{:d}'.format(rank))
-    
+    prosody_minmax_dict = {
+        "pitch_min":65,
+        "pitch_max":700,
+        "energy_min":0.0,
+        "energy_max":150,
+    } if a.prosody else None
     generator = AVHuBERTGenerator(hifigenerator_config=h,
                                   avhubert_model_config=avhubert_config["model"], 
-                                  use_prosody=a.prosody,
+                                  prosody_minmax_dict=prosody_minmax_dict,
                                   ).to(device)
     mpd = MultiPeriodDiscriminator().to(device)
     msd = MultiScaleDiscriminator().to(device)
@@ -161,8 +166,6 @@ def train(rank, a, h, avhubert_config):
                     return (x - x.mean(dim=-1, keepdim=True))/(m+x.std(dim=-1, keepdim=True))
                 energy_targets = y_dict["energy"].to(device)
                 pitch_targets = avhubert_source_batch["pitch"].to(device)
-                energy_targets = normalize_prosody(energy_targets)
-                pitch_targets = normalize_prosody(pitch_targets)
                 if a.real_prosody:
                     # keys are param names of forward func of ProsodyPredictor
                     prosody_target["pitch_target"] = pitch_targets
@@ -173,6 +176,11 @@ def train(rank, a, h, avhubert_config):
             if a.prosody:
                 pitch_predictions = generator_out["prosody"]["pitch_pred"]
                 energy_predictions = generator_out["prosody"]["energy_pred"]
+                
+                energy_targets = normalize_prosody(energy_targets)
+                pitch_targets = normalize_prosody(pitch_targets)
+                pitch_predictions = normalize_prosody(pitch_predictions)
+                energy_predictions = normalize_prosody(energy_predictions)
 
                 pitch_loss = F.mse_loss(pitch_predictions.masked_select(~mel_padding_mask), pitch_targets.masked_select(~mel_padding_mask))
                 energy_loss = F.mse_loss(energy_predictions.masked_select(~mel_padding_mask), energy_targets.masked_select(~mel_padding_mask))
