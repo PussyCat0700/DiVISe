@@ -23,7 +23,8 @@ class ProsodyPredictor(nn.Module):
         assert self.pitch_feature_level in ["phoneme_level", "frame_level"]
         assert self.energy_feature_level in ["phoneme_level", "frame_level"]
 
-        pitch_quantization ="log"
+        # pitch_quantization ="log"
+        pitch_quantization ="linear"  # TODO: linear should be enough? Verify.
         energy_quantization = "linear"
         n_bins = n_bins
         assert pitch_quantization in ["linear", "log"]

@@ -46,10 +46,10 @@ def train(rank, a, h, avhubert_config):
     torch.cuda.set_device(rank)  # A very strong boost. See https://github.com/jik876/hifi-gan/pull/25
     device = torch.device('cuda:{:d}'.format(rank))
     prosody_minmax_dict = {
-        "pitch_min":65,
-        "pitch_max":700,
-        "energy_min":0.0,
-        "energy_max":150,
+        "pitch_min":h.pitch_min,
+        "pitch_max":h.pitch_max,
+        "energy_min":h.energy_min,
+        "energy_max":h.energy_max,
     } if a.prosody else None
     generator = AVHuBERTGenerator(hifigenerator_config=h,
                                   avhubert_model_config=avhubert_config["model"], 
