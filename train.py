@@ -162,8 +162,6 @@ def train(rank, a, h, avhubert_config):
                 "energy_target":None,
             }
             if a.prosody:
-                def normalize_prosody(x, m=1):
-                    return (x - x.mean(dim=-1, keepdim=True))/(m+x.std(dim=-1, keepdim=True))
                 energy_targets = y_dict["energy"].to(device)
                 pitch_targets = avhubert_source_batch["pitch"].to(device)
                 if a.real_prosody:
@@ -176,14 +174,8 @@ def train(rank, a, h, avhubert_config):
             if a.prosody:
                 pitch_predictions = generator_out["prosody"]["pitch_pred"]
                 energy_predictions = generator_out["prosody"]["energy_pred"]
-                
-                energy_targets = normalize_prosody(energy_targets)
-                pitch_targets = normalize_prosody(pitch_targets)
-                pitch_predictions = normalize_prosody(pitch_predictions)
-                energy_predictions = normalize_prosody(energy_predictions)
-
-                pitch_loss = F.mse_loss(pitch_predictions.masked_select(~mel_padding_mask), pitch_targets.masked_select(~mel_padding_mask))
-                energy_loss = F.mse_loss(energy_predictions.masked_select(~mel_padding_mask), energy_targets.masked_select(~mel_padding_mask))
+                pitch_loss = 1e-4*F.mse_loss(pitch_predictions.masked_select(~mel_padding_mask), pitch_targets.masked_select(~mel_padding_mask))
+                energy_loss = 5e-3*F.mse_loss(energy_predictions.masked_select(~mel_padding_mask), energy_targets.masked_select(~mel_padding_mask))
             
             y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size,
                                           h.fmin, h.fmax_for_loss)
