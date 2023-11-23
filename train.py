@@ -168,22 +168,29 @@ def train(rank, a, h, avhubert_config):
                 pitch_targets = avhubert_source_batch["pitch"].to(device)
                 if a.real_prosody:
                     # keys are param names of forward func of ProsodyPredictor
-                    prosody_target["pitch_target"] = normalize_prosody(energy_targets)
-                    prosody_target["energy_target"] = normalize_prosody(pitch_targets)
+                    if h.norm_mode == 'meanvar':
+                        prosody_target["pitch_target"] = normalize_prosody(energy_targets)
+                        prosody_target["energy_target"] = normalize_prosody(pitch_targets)
+                    else:
+                        prosody_target["pitch_target"] = energy_targets
+                        prosody_target["energy_target"] = pitch_targets
             generator_out = generator(avhubert_source_batch["video"].to(device), prosody_target)
             y_g_hat = generator_out["wav_generated"]
             y_g_avhubert_mel = generator_out["melspec_out"]
             if a.prosody:
                 pitch_predictions = generator_out["prosody"]["pitch_pred"]
                 energy_predictions = generator_out["prosody"]["energy_pred"]
-                
-                energy_targets = normalize_prosody(energy_targets)
-                pitch_targets = normalize_prosody(pitch_targets)
-                pitch_predictions = normalize_prosody(pitch_predictions)
-                energy_predictions = normalize_prosody(energy_predictions)
+                if h.norm_mode == 'meanvar':
+                    energy_targets = normalize_prosody(energy_targets)
+                    pitch_targets = normalize_prosody(pitch_targets)
+                    pitch_predictions = normalize_prosody(pitch_predictions)
+                    energy_predictions = normalize_prosody(energy_predictions)
                 
                 pitch_loss = F.mse_loss(pitch_predictions.masked_select(~mel_padding_mask), pitch_targets.masked_select(~mel_padding_mask))
                 energy_loss = F.mse_loss(energy_predictions.masked_select(~mel_padding_mask), energy_targets.masked_select(~mel_padding_mask))
+                if h.norm_mode == 'original':
+                    pitch_loss = 1e-4*pitch_loss
+                    energy_loss = 5e-3*energy_loss
             
             y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size,
                                           h.fmin, h.fmax_for_loss)
@@ -346,7 +353,7 @@ def main():
     parser = argparse.ArgumentParser()
     default_ckpt_dir = 'cp_hifigan'
     parser.add_argument('--checkpoint_path', default=default_ckpt_dir)
-    parser.add_argument('--hifigan_config', default='conf/hifigan/video2speech_v1.json')
+    parser.add_argument('--hifigan_config', default='conf/hifigan/video2speech_template.json')  # TODO: Change back in formal release
     parser.add_argument('--avhubert_config', default='conf/avhubert/base_avhubert.yaml')
     parser.add_argument('--avhubert_ckpt', help='if specified, will load pretrained weight onto AVHuBERTModel')
     parser.add_argument('--training_epochs', default=100, type=int)
@@ -369,6 +376,7 @@ def main():
 
     json_config = json.loads(data)
     h = AttrDict(json_config)
+    assert h.norm_mode in ['original', 'meanvar'], f"{h.norm_mode=} which is not a valid way to normalize prosody."
     build_env(a.hifigan_config, 'hifigan_config.json', a.checkpoint_path)
     
     avhubert_config = load_avhubert_config(a.avhubert_config)
