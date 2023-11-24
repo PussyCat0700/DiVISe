@@ -376,7 +376,8 @@ def main():
 
     json_config = json.loads(data)
     h = AttrDict(json_config)
-    assert h.norm_mode in ['original', 'meanvar'], f"{h.norm_mode=} which is not a valid way to normalize prosody."
+    if a.prosody:
+        assert h.norm_mode in ['original', 'meanvar'], f"{h.norm_mode=} which is not a valid way to normalize prosody."
     build_env(a.hifigan_config, 'hifigan_config.json', a.checkpoint_path)
     
     avhubert_config = load_avhubert_config(a.avhubert_config)
