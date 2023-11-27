@@ -89,6 +89,7 @@ class AVHubertDataset(FairseqDataset):
             max_keep_sample_size: Optional[int] = None,
             min_keep_sample_size: Optional[int] = None,
             max_sample_seconds: Optional[float] = None,
+            pitch_type: Optional[str] = None,  # Should be pyworld or kaldi
             shuffle: bool = True,
             pad_audio: bool = False,
             normalize: bool = False,
@@ -128,6 +129,7 @@ class AVHubertDataset(FairseqDataset):
         )
         self.pad_audio = pad_audio
         self.normalize = normalize
+        self.pitch_type = pitch_type
         if image_aug:
             self.transform = custom_utils.Compose([
                 custom_utils.Normalize( 0.0,255.0 ),
@@ -185,8 +187,14 @@ class AVHubertDataset(FairseqDataset):
         audio_fn, audio_id = audio_fn.split(':')
         audio_id = audio_id.split('/')[-1]
         audio_base_dir = os.path.dirname(audio_fn)
-        pw_pitch_fn = os.path.join(audio_base_dir, f"{audio_id}_pw_dio.npy")
-        pitch = np.load(pw_pitch_fn)
+        if self.pitch_type == 'pyworld':
+            pw_pitch_fn = os.path.join(audio_base_dir, f"{audio_id}_pw_dio.npy")
+            pitch = np.load(pw_pitch_fn)
+        elif self.pitch_type == 'kaldi':
+            kaldi_pitch_fn = os.path.join(audio_base_dir, f"{audio_id}_kaldi.pt")
+            pitch = torch.load(kaldi_pitch_fn)
+        else:
+            pitch = None
         if 'video' in self.modalities:
             video_feats = self.load_video(video_fn) # [T, H, W, 1]
         else:
@@ -255,7 +263,8 @@ class AVHubertDataset(FairseqDataset):
     def __getitem__(self, index):
         video_feats, wav_data, pitch_data = self.load_video_audiowav_pitch(self.names[index])
         wav_data, video_feats = torch.FloatTensor(wav_data) if wav_data is not None else None, torch.from_numpy(video_feats.astype(np.float32)) if video_feats is not None else None
-        pitch_data = torch.FloatTensor(pitch_data)
+        if pitch_data is not None:
+            pitch_data = torch.FloatTensor(pitch_data)
         labels = self.get_labels(index)
         fid = self.names[index][1].split(':')[1]
         return {"id": index, 'fid': fid, "video_source": video_feats, 'audio_source': wav_data, "label_list": labels, "pitch_source": pitch_data,}
@@ -284,19 +293,22 @@ class AVHubertDataset(FairseqDataset):
             return {}
         audio_source, video_source = [s["audio_source"] for s in samples], [s["video_source"] for s in samples]
         pitch_source = [s["pitch_source"] for s in samples]
+        with_pitch = None not in pitch_source
         if audio_source[0] is None:
             audio_source = None
         if video_source[0] is None:
             video_source = None
         if audio_source is not None:
             audio_sizes = [len(s) for s in audio_source]
-            pitch_sizes = [len(s) for s in pitch_source]
+            if with_pitch:
+                pitch_sizes = [len(s) for s in pitch_source]
         if video_source is not None:
             video_sizes = [len(s) for s in video_source]
         if audio_source is not None and video_source is not None:
             # compulsory align and trim for audio
             audio_sizes = [video_size*self.video2mel_magnitude*self.hop_size_mel for video_size in video_sizes]
-            pitch_sizes = [video_size*self.video2mel_magnitude for video_size in video_sizes]
+            if with_pitch:
+                pitch_sizes = [video_size*self.video2mel_magnitude for video_size in video_sizes]
         if self.pad_audio:
             func = lambda curr_x, max_sample_x: min(max(curr_x), max_sample_x)
         else:
@@ -305,9 +317,11 @@ class AVHubertDataset(FairseqDataset):
             audio_size = func(audio_sizes, self.max_audio_sample_size)
             collated_audios, padding_mask, audio_starts = self.collater_wav(audio_source, audio_size)
             second_starts = [audio_start/self.sr_audio for audio_start in audio_starts]  # By default(padding), This will always be 0.0.
-            pitch_size = func(pitch_sizes, self.max_pitch_sample_size)
-            pitch_starts = [int(second_start*self.sr_pitch) for second_start in second_starts]
-            collated_pitches, _, pitch_starts = self.collater_wav(pitch_source, pitch_size, pitch_starts)
+            collated_pitches = None
+            if with_pitch:
+                pitch_size = func(pitch_sizes, self.max_pitch_sample_size)
+                pitch_starts = [int(second_start*self.sr_pitch) for second_start in second_starts]
+                collated_pitches, _, pitch_starts = self.collater_wav(pitch_source, pitch_size, pitch_starts)
         else:
             collated_audios, audio_starts = None, None
             collated_pitches = None
@@ -366,7 +380,9 @@ class AVHubertDataset(FairseqDataset):
         return collated_videos, padding_mask_mel, video_starts
     
     def collater_wav(self, wavs, wav_size, wav_starts=None):
-        collated_wavs = wavs[0].new_zeros([len(wavs), wav_size])  # [B, T]
+        wav_feat_size = list(wavs[0].shape[1:])  # In case we have pitch as input. Raw waveforms doesn't need this.
+        collated_size = [len(wavs), wav_size]+wav_feat_size
+        collated_wavs = wavs[0].new_zeros(collated_size)  # [B, T] for wav or [B, T, 2] for kaldi pitch
         padding_mask = (
             torch.BoolTensor(len(wavs), wav_size).fill_(False) # 
         )
@@ -379,7 +395,7 @@ class AVHubertDataset(FairseqDataset):
             elif diff < 0:
                 assert self.pad_audio
                 collated_wavs[i] = torch.cat(
-                    [wav, wav.new_full([-diff], 0.0)]
+                    [wav, wav.new_full([-diff]+wav_feat_size, 0.0)]
                 )
                 padding_mask[i, diff:] = True
             else:

@@ -28,14 +28,19 @@
     "fmax": 8000,
     "fmax_for_loss": null,
 
-    "prosody_type": null,
+    "prosody_type":"pyworld",
+    "pitch_min":-4.0,
+    "pitch_max":13.0,
+    "energy_min":-3.0,
+    "energy_max":12.0,
+    "norm_mode": "meanvar",
 
     "save_on_metric": "mel_spec_error_generator",
     "lower_the_better": true,
 
     "dist_config": {
         "dist_backend": "nccl",
-        "dist_url": "tcp://localhost:54322",
+        "dist_url": "tcp://localhost:54321",
         "world_size": 1
     }
 }

@@ -45,12 +45,17 @@ def train(rank, a, h, avhubert_config):
     torch.cuda.manual_seed(h.seed)
     torch.cuda.set_device(rank)  # A very strong boost. See https://github.com/jik876/hifi-gan/pull/25
     device = torch.device('cuda:{:d}'.format(rank))
-    prosody_minmax_dict = {
-        "pitch_min":h.pitch_min,
-        "pitch_max":h.pitch_max,
-        "energy_min":h.energy_min,
-        "energy_max":h.energy_max,
-    } if a.prosody else None
+    prosody_minmax_dict = None
+    if h.prosody_type is not None:
+        prosody_minmax_dict = {
+            "pitch_min":h.pitch_min,
+            "pitch_max":h.pitch_max,
+            "energy_min":h.energy_min,
+            "energy_max":h.energy_max,
+        }
+        if h.prosody_type == 'kaldi':
+            prosody_minmax_dict["nccf_min"] = h.nccf_min
+            prosody_minmax_dict["nccf_max"] = h.nccf_max
     generator = AVHuBERTGenerator(hifigenerator_config=h,
                                   avhubert_model_config=avhubert_config["model"], 
                                   prosody_minmax_dict=prosody_minmax_dict,
@@ -100,7 +105,7 @@ def train(rank, a, h, avhubert_config):
 
     scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=h.lr_decay, last_epoch=last_epoch)
     scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=h.lr_decay, last_epoch=last_epoch)
-    trainset = load_dataset("train", avhubert_config["task"])
+    trainset = load_dataset("train", avhubert_config["task"], h.prosody_type)
     train_loader, train_sampler = get_dataloader(trainset, 
                                                 batch_size=a.batch_size,
                                                 num_workers=h.num_gpus, 
@@ -160,37 +165,50 @@ def train(rank, a, h, avhubert_config):
             prosody_target = {
                 "pitch_target":None,
                 "energy_target":None,
+                "nccf_target": None,
             }
             def normalize_prosody(x, m=1e-8):
                 return (x - x.mean(dim=-1, keepdim=True))/(m+x.std(dim=-1, keepdim=True))
-            if a.prosody:
+            if h.prosody_type is not None:
                 energy_targets = y_dict["energy"].to(device)
                 pitch_targets = avhubert_source_batch["pitch"].to(device)
+                nccf_targets = None
+                if h.prosody_type == 'kaldi':
+                    nccf_targets = pitch_targets[..., 1]
+                    pitch_targets = pitch_targets[..., 0]
+                
+                # Norm if any
+                if h.norm_mode == 'meanvar':
+                    energy_targets = normalize_prosody(energy_targets)
+                    if h.prosody_type == "kaldi":
+                        nccf_targets = normalize_prosody(nccf_targets)  # kaldi pitch doesn't need normalization.
+                    else:
+                        pitch_targets = normalize_prosody(pitch_targets)
+
                 if a.real_prosody:
                     # keys are param names of forward func of ProsodyPredictor
-                    if h.norm_mode == 'meanvar':
-                        prosody_target["pitch_target"] = normalize_prosody(energy_targets)
-                        prosody_target["energy_target"] = normalize_prosody(pitch_targets)
-                    else:
-                        prosody_target["pitch_target"] = energy_targets
-                        prosody_target["energy_target"] = pitch_targets
+                    prosody_target["energy_target"] = energy_targets
+                    prosody_target["pitch_target"] = pitch_targets
+                    prosody_target["nccf_target"] = nccf_targets
             generator_out = generator(avhubert_source_batch["video"].to(device), prosody_target)
             y_g_hat = generator_out["wav_generated"]
             y_g_avhubert_mel = generator_out["melspec_out"]
-            if a.prosody:
+            if h.prosody_type is not None:
                 pitch_predictions = generator_out["prosody"]["pitch_pred"]
                 energy_predictions = generator_out["prosody"]["energy_pred"]
-                if h.norm_mode == 'meanvar':
-                    energy_targets = normalize_prosody(energy_targets)
-                    pitch_targets = normalize_prosody(pitch_targets)
-                    pitch_predictions = normalize_prosody(pitch_predictions)
-                    energy_predictions = normalize_prosody(energy_predictions)
                 
                 pitch_loss = F.mse_loss(pitch_predictions.masked_select(~mel_padding_mask), pitch_targets.masked_select(~mel_padding_mask))
                 energy_loss = F.mse_loss(energy_predictions.masked_select(~mel_padding_mask), energy_targets.masked_select(~mel_padding_mask))
                 if h.norm_mode == 'original':
-                    pitch_loss = 1e-4*pitch_loss
-                    energy_loss = 5e-3*energy_loss
+                    pitch_loss = h.pitch_scale*pitch_loss
+                    energy_loss = h.energy_scale*energy_loss
+                prosody_loss = pitch_loss+energy_loss
+                if h.prosody_type == 'kaldi':
+                    nccf_predictions = generator_out["prosody"]["nccf_pred"]
+                    nccf_loss = F.mse_loss(nccf_predictions.masked_select(~mel_padding_mask), nccf_targets.masked_select(~mel_padding_mask))
+                    if h.norm_mode == 'original':
+                        nccf_loss = h.nccf_scale*nccf_loss
+                    prosody_loss += nccf_loss
             
             y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size,
                                           h.fmin, h.fmax_for_loss)
@@ -227,8 +245,8 @@ def train(rank, a, h, avhubert_config):
             loss_gen_f, losses_gen_f = generator_loss(y_df_hat_g)
             loss_gen_s, losses_gen_s = generator_loss(y_ds_hat_g)
             loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel + loss_mel_avhubert
-            if a.prosody:
-                loss_gen_all += pitch_loss + energy_loss
+            if h.prosody_type is not None:
+                loss_gen_all += prosody_loss
             loss_gen_all.backward()
             optim_g.step()
 
@@ -249,9 +267,11 @@ def train(rank, a, h, avhubert_config):
                     log_training("gen_loss_total", loss_gen_all)
                     log_training("mel_spec_error_generator", mel_error_generator)
                     log_training("mel_spec_error_avhubert", mel_error_avhubert)
-                    if a.prosody:
+                    if h.prosody_type is not None:
                         log_training("pitch_regression_mse", pitch_loss)
                         log_training("energy_regression_mse", energy_loss)
+                        if h.prosody_type == 'kaldi':
+                            log_training("nccf_regression_mse", nccf_loss)
                     log_training("epoch", epoch)
                     log_training("alpha_avhubert", alpha_avhubert)
 
@@ -360,12 +380,10 @@ def main():
     parser.add_argument('--stdout_interval', default=5, type=int)
     parser.add_argument('--summary_interval', default=100, type=int)
     parser.add_argument('--wandb', action='store_true')
-    parser.add_argument('--no_prosody', action='store_true')
     parser.add_argument('--batch_size', type=int, default=8, help='per device batch size')
     parser.add_argument('--predicted-prosody', action='store_true', help='if specified, will use predicted prosody instead of GT in training.')
 
     a = parser.parse_args()
-    a.prosody = not a.no_prosody
     a.real_prosody = not a.predicted_prosody
     if a.checkpoint_path == default_ckpt_dir:
         logging.warning(f"You're using default checkpoint dir {default_ckpt_dir}.\n"+\
@@ -376,7 +394,7 @@ def main():
 
     json_config = json.loads(data)
     h = AttrDict(json_config)
-    if a.prosody:
+    if h.prosody_type is not None:
         assert h.norm_mode in ['original', 'meanvar'], f"{h.norm_mode=} which is not a valid way to normalize prosody."
     build_env(a.hifigan_config, 'hifigan_config.json', a.checkpoint_path)
     

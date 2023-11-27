@@ -45,7 +45,7 @@ def get_dataloader(dataset:AVHubertDataset, batch_size, shuffle, num_workers, di
     
     return loader, sampler
 
-def load_dataset(split: str, cfg:AVHubertPretrainingConfig) -> None:
+def load_dataset(split: str, cfg:AVHubertPretrainingConfig, pitch_type=None) -> None:
         manifest = f"{cfg.data}/{split}.tsv"
         paths = [
             f"{cfg.data}/{split}.{l}" for l in cfg.labels
@@ -64,6 +64,7 @@ def load_dataset(split: str, cfg:AVHubertPretrainingConfig) -> None:
             max_keep_sample_size=500,  # This corresponds to a term read from tsv file preprocessed from AV-HuBERT pipeline
             min_keep_sample_size=cfg.min_sample_size,  # None
             max_sample_seconds=max_sample_seconds,
+            pitch_type=pitch_type,
             pad_audio=pad_audio,  # Should be True
             normalize=cfg.normalize,  # True
             store_labels=False,

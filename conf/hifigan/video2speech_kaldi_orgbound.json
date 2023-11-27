@@ -28,10 +28,16 @@
     "fmax": 8000,
     "fmax_for_loss": null,
 
-    "pitch_min":0.0,
-    "pitch_max":1000.0,
+    "prosody_type":"kaldi",
+    "pitch_min":-1.0,
+    "pitch_max":1.0,
+    "nccf_min":50,
+    "nccf_max":400,
     "energy_min":0.0,
     "energy_max":250.0,
+    "pitch_scale":1.0,
+    "nccf_scale":1e-4,
+    "energy_scale":5e-3,
     "norm_mode": "original",
 
     "save_on_metric": "mel_spec_error_generator",
@@ -39,7 +45,7 @@
 
     "dist_config": {
         "dist_backend": "nccl",
-        "dist_url": "tcp://localhost:54320",
+        "dist_url": "tcp://localhost:54323",
         "world_size": 1
     }
 }
