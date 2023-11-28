@@ -31,8 +31,6 @@
     "prosody_type":"kaldi",
     "pitch_min":-1.0,
     "pitch_max":1.0,
-    "nccf_min":-25.0,
-    "nccf_max":25.0,
     "energy_min":-3.0,
     "energy_max":12.0,
     "norm_mode": "meanvar",

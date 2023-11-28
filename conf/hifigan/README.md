@@ -1,0 +1,1 @@
+- video2speech_kaldi_normbound is not recommended since kaldi pitch already falls in the range [-1, 1].

@@ -53,9 +53,6 @@ def train(rank, a, h, avhubert_config):
             "energy_min":h.energy_min,
             "energy_max":h.energy_max,
         }
-        if h.prosody_type == 'kaldi':
-            prosody_minmax_dict["nccf_min"] = h.nccf_min
-            prosody_minmax_dict["nccf_max"] = h.nccf_max
     generator = AVHuBERTGenerator(hifigenerator_config=h,
                                   avhubert_model_config=avhubert_config["model"], 
                                   prosody_minmax_dict=prosody_minmax_dict,
@@ -165,31 +162,25 @@ def train(rank, a, h, avhubert_config):
             prosody_target = {
                 "pitch_target":None,
                 "energy_target":None,
-                "nccf_target": None,
             }
             def normalize_prosody(x, m=1e-8):
                 return (x - x.mean(dim=-1, keepdim=True))/(m+x.std(dim=-1, keepdim=True))
             if h.prosody_type is not None:
                 energy_targets = y_dict["energy"].to(device)
                 pitch_targets = avhubert_source_batch["pitch"].to(device)
-                nccf_targets = None
                 if h.prosody_type == 'kaldi':
-                    nccf_targets = pitch_targets[..., 1]
                     pitch_targets = pitch_targets[..., 0]
                 
                 # Norm if any
                 if h.norm_mode == 'meanvar':
                     energy_targets = normalize_prosody(energy_targets)
-                    if h.prosody_type == "kaldi":
-                        nccf_targets = normalize_prosody(nccf_targets)  # kaldi pitch doesn't need normalization.
-                    else:
-                        pitch_targets = normalize_prosody(pitch_targets)
+                    if h.prosody_type != "kaldi":
+                        pitch_targets = normalize_prosody(pitch_targets)  # kaldi pitch doesn't need normalization.
 
                 if a.real_prosody:
                     # keys are param names of forward func of ProsodyPredictor
                     prosody_target["energy_target"] = energy_targets
                     prosody_target["pitch_target"] = pitch_targets
-                    prosody_target["nccf_target"] = nccf_targets
             generator_out = generator(avhubert_source_batch["video"].to(device), prosody_target)
             y_g_hat = generator_out["wav_generated"]
             y_g_avhubert_mel = generator_out["melspec_out"]
@@ -203,12 +194,6 @@ def train(rank, a, h, avhubert_config):
                     pitch_loss = h.pitch_scale*pitch_loss
                     energy_loss = h.energy_scale*energy_loss
                 prosody_loss = pitch_loss+energy_loss
-                if h.prosody_type == 'kaldi':
-                    nccf_predictions = generator_out["prosody"]["nccf_pred"]
-                    nccf_loss = F.mse_loss(nccf_predictions.masked_select(~mel_padding_mask), nccf_targets.masked_select(~mel_padding_mask))
-                    if h.norm_mode == 'original':
-                        nccf_loss = h.nccf_scale*nccf_loss
-                    prosody_loss += nccf_loss
             
             y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size,
                                           h.fmin, h.fmax_for_loss)
@@ -270,8 +255,6 @@ def train(rank, a, h, avhubert_config):
                     if h.prosody_type is not None:
                         log_training("pitch_regression_mse", pitch_loss)
                         log_training("energy_regression_mse", energy_loss)
-                        if h.prosody_type == 'kaldi':
-                            log_training("nccf_regression_mse", nccf_loss)
                     log_training("epoch", epoch)
                     log_training("alpha_avhubert", alpha_avhubert)
 
