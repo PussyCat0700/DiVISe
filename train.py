@@ -304,11 +304,11 @@ def train(rank, a, h, avhubert_config):
                             sw.add_text('gt/y_text_{}'.format(j), text[0], steps)
                             sw.add_figure('gt/y_spec_{}'.format(j), plot_spectrogram(y_mel[0].cpu()), steps)
 
-                        sw.add_audio('generated/y_hat_{}'.format(j), y_g_hat[0], steps, h.sampling_rate)
+                        sw.add_audio(f'generated_ep{epoch}/y_hat_{j}', y_g_hat[0], steps, h.sampling_rate)
                         y_hat_spec = mel_spectrogram(y_g_hat[0].cpu(), h.n_fft, h.num_mels,
                                                         h.sampling_rate, h.hop_size, h.win_size,
                                                         h.fmin, h.fmax)
-                        sw.add_figure('generated/y_hat_spec_{}'.format(j),
+                        sw.add_figure(f'generated_ep{epoch}/y_hat_spec_{j}',
                                         plot_spectrogram(y_hat_spec.squeeze(0).cpu().numpy()), steps)
 
                 for val_err_key, val_err_term in val_err_tot.items():
