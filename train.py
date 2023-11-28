@@ -37,7 +37,7 @@ logging.getLogger(__name__)
 
 def train(rank, a, h, avhubert_config):
     if rank == 0 and a.wandb:
-        proj_name = os.path.basename(a.checkpoint_path)
+        proj_name = os.path.basename(os.path.abspath(a.checkpoint_path))
         wandb.init(project=proj_name, sync_tensorboard=True)
     if h.num_gpus > 1:
         init_process_group(backend=h.dist_config['dist_backend'], init_method=h.dist_config['dist_url'],
