@@ -34,6 +34,7 @@
     "energy_min":-3.0,
     "energy_max":12.0,
     "norm_mode": "meanvar",
+    "embedding_method":"quantization",
 
     "save_on_metric": "mel_spec_error_generator",
     "lower_the_better": true,

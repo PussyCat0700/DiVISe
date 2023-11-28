@@ -127,7 +127,7 @@ class AVHubertEncoder(nn.Module):
         self.avhubert_model = AVHubertModel(cfg=cfg)
         self.use_prosody = prosody_minmax_dict is not None
         if self.use_prosody:
-            self.prosody_predictor = ProsodyPredictor(**prosody_minmax_dict)
+            self.prosody_predictor = ProsodyPredictor(encoder_hidden=self.attention_dim, **prosody_minmax_dict)
         self.conformer_encoder = ConformerEncoder(size)
         self.avhubert2downstream = torch.nn.Linear(768, self.attention_dim*4)
         self.attention2mel = torch.nn.Linear(self.attention_dim, num_mels)

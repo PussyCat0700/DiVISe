@@ -36,6 +36,7 @@
     "pitch_scale":1e-4,
     "energy_scale":5e-3,
     "norm_mode": "original",
+    "embedding_method":"quantization",
 
     "save_on_metric": "mel_spec_error_generator",
     "lower_the_better": true,

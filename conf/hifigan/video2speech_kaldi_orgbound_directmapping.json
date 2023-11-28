@@ -28,20 +28,18 @@
     "fmax": 8000,
     "fmax_for_loss": null,
 
-    "prosody_type":"pyworld",
-    "pitch_min":-4.0,
-    "pitch_max":13.0,
-    "energy_min":-3.0,
-    "energy_max":12.0,
-    "norm_mode": "meanvar",
-    "embedding_method":"quantization",
+    "prosody_type":"kaldi",
+    "pitch_scale":1.0,
+    "energy_scale":5e-30,
+    "norm_mode": "original",
+    "embedding_method":"directmapping",
 
     "save_on_metric": "mel_spec_error_generator",
     "lower_the_better": true,
 
     "dist_config": {
         "dist_backend": "nccl",
-        "dist_url": "tcp://localhost:54321",
+        "dist_url": "tcp://localhost:54325",
         "world_size": 1
     }
 }

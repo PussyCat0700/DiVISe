@@ -29,19 +29,19 @@ class LNDropoutBasicBlock(nn.Module):
 class Predictor(nn.Module):
     # Original settings for predictors can be referenced at appendix A of FastSpeech 2:
     # https://arxiv.org/abs/2006.04558
-    def __init__(self, embed_dim=256, dropout_rate=0.1) -> None:
+    def __init__(self, in_dim=256, out_dim=1, embed_dim=256, dropout_rate=0.1) -> None:
         super().__init__()
         self.blocks = nn.Sequential(
-            ConvBasicBlock(embed_dim, embed_dim, 9),
+            ConvBasicBlock(in_dim, embed_dim, 9),
             LNDropoutBasicBlock(embed_dim, dropout_rate),
             ConvBasicBlock(embed_dim, embed_dim, 1),
             LNDropoutBasicBlock(embed_dim, dropout_rate),
-            nn.Linear(embed_dim, 1),
+            nn.Linear(embed_dim, out_dim),
         )
     
     def forward(self, x, mask):
         y = self.blocks(x)
-        y = y.squeeze(-1)  # (B, T, 1)->(B, T)
+        y = y.squeeze(-1)  # (B, T, 1)->(B, T), or (B, T, C) and nothing happens. 
         if mask is not None:
             y = y.masked_fill(mask, 0.0)
         return y

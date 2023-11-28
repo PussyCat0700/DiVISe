@@ -24,6 +24,7 @@ from dataset.meldataset import mel_spectrogram, mel_spectrogram_and_energy
 from models import AVHuBERTGenerator, MultiPeriodDiscriminator, MultiScaleDiscriminator, feature_loss, generator_loss,\
     discriminator_loss
 from utils import plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint
+from prosody_predictor.predictor import ProsodyPredictor
 
 torch.backends.cudnn.benchmark = True
 logging.basicConfig(
@@ -48,11 +49,16 @@ def train(rank, a, h, avhubert_config):
     prosody_minmax_dict = None
     if h.prosody_type is not None:
         prosody_minmax_dict = {
-            "pitch_min":h.pitch_min,
-            "pitch_max":h.pitch_max,
-            "energy_min":h.energy_min,
-            "energy_max":h.energy_max,
+            "embedding_method":h.embedding_method,
         }
+        if h.embedding_method == ProsodyPredictor.QUANTIZATION:
+            prosody_minmax_dict.update({  
+                "pitch_min":h.pitch_min,
+                "pitch_max":h.pitch_max,
+                "energy_min":h.energy_min,
+                "energy_max":h.energy_max,
+            })
+            
     generator = AVHuBERTGenerator(hifigenerator_config=h,
                                   avhubert_model_config=avhubert_config["model"], 
                                   prosody_minmax_dict=prosody_minmax_dict,
