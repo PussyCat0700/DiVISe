@@ -225,8 +225,11 @@ def train(rank, a, h, avhubert_config):
             # L1 Mel-Spectrogram Loss
             loss_mel = F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_hat_mel.masked_select(~mel_padding_mask.unsqueeze(1))) * 45
             # Another L1 Mel-Spectrogram Loss from AV-HuBERT Generator itself.
-            alpha_avhubert = 0 if train_ratio>1/5 else -5*train_ratio+1  # 1.0 if ratio==0, 0.0 if ratio==1/5
-            alpha_avhubert = h.base_alpha_avhubert*alpha_avhubert
+            if a.decay_melloss:
+                alpha_avhubert = 0 if train_ratio>1/5 else -5*train_ratio+1  # 1.0 if ratio==0, 0.0 if ratio==1/5
+                alpha_avhubert = h.base_alpha_avhubert*alpha_avhubert
+            else:
+                alpha_avhubert = h.base_alpha_avhubert
             loss_mel_avhubert = F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_avhubert_mel.masked_select(~mel_padding_mask.unsqueeze(1))) * alpha_avhubert
 
             y_df_hat_r, y_df_hat_g, fmap_f_r, fmap_f_g = mpd(y, y_g_hat)
@@ -370,7 +373,8 @@ def main():
     parser.add_argument('--summary_interval', default=100, type=int)
     parser.add_argument('--wandb', action='store_true')
     parser.add_argument('--batch_size', type=int, default=8, help='per device batch size')
-    parser.add_argument('--predicted-prosody', action='store_true', help='if specified, will use predicted prosody instead of GT in training.')
+    parser.add_argument('--predicted-prosody', action='store_true', help='(deprecated) if specified, will use predicted prosody instead of GT in training.')
+    parser.add_argument('--decay_melloss', action='store_true', help='(deprecated) if specified, will decay mel loss in first 1/5 of total epochs.')
 
     a = parser.parse_args()
     a.real_prosody = not a.predicted_prosody
