@@ -12,6 +12,8 @@ class ProsodyPredictor(nn.Module):
     """
     QUANTIZATION = 'quantization'
     DIRECTMAPPING = 'directmapping'
+    CLASSIFICATION = 'classification'
+    EMBEDDING_METHODS = {QUANTIZATION, DIRECTMAPPING, CLASSIFICATION}
     # TODO: check pitch/energy min/max for LRS3
     def __init__(self, 
                  embedding_method:str,
@@ -22,11 +24,12 @@ class ProsodyPredictor(nn.Module):
                  n_bins=256, encoder_hidden=256,
                  ):
         super().__init__()
-        self.pitch_predictor = Predictor(in_dim=encoder_hidden)
-        self.energy_predictor = Predictor(in_dim=encoder_hidden)
-        assert embedding_method in [self.QUANTIZATION, self.DIRECTMAPPING]
+        assert embedding_method in self.EMBEDDING_METHODS
         self.embedding_method = embedding_method
-        if self.embedding_method == self.QUANTIZATION:
+        out_dim = n_bins if self.embedding_method == self.CLASSIFICATION else 1
+        self.pitch_predictor = Predictor(in_dim=encoder_hidden, out_dim=out_dim)
+        self.energy_predictor = Predictor(in_dim=encoder_hidden, out_dim=out_dim)
+        if self.embedding_method != self.DIRECTMAPPING:
             # pitch_quantization ="log"
             pitch_quantization ="linear"  # TODO: linear should be enough? Verify.
             energy_quantization = "linear"
@@ -54,28 +57,36 @@ class ProsodyPredictor(nn.Module):
             # We're calling them "embedding"s just for identical naming conventions.
             self.pitch_embedding = Predictor(in_dim=1, out_dim=encoder_hidden)
             self.energy_embedding = Predictor(in_dim=1, out_dim=encoder_hidden)
+            
+    def _get_embedding(self, x, target, mask, control, predictor, bins, embeddingparams):
+        # control is not valid in classification mode.
+        target_embedding_idx = None
+        prediction = predictor(x, mask)
+        if target is not None:
+            target_embedding_idx = torch.bucketize(target, bins)
+            embedding = embeddingparams(target_embedding_idx)
+        else:
+            if self.embedding_method == self.CLASSIFICATION:
+                embedding_idx = prediction.max(dim=-1).indices
+            else:
+                prediction = prediction * control
+                embedding_idx = torch.bucketize(prediction, bins)
+            embedding = embeddingparams(
+                embedding_idx
+            )
+        return prediction, embedding, target_embedding_idx
 
     def get_pitch_embedding(self, x, target, mask, control):
-        prediction = self.pitch_predictor(x, mask)
-        if target is not None:
-            embedding = self.pitch_embedding(torch.bucketize(target, self.pitch_bins))
-        else:
-            prediction = prediction * control
-            embedding = self.pitch_embedding(
-                torch.bucketize(prediction, self.pitch_bins)
-            )
-        return prediction, embedding
+        return self._get_embedding(x, target, mask, control,
+                                   predictor=self.pitch_predictor,
+                                   bins=self.pitch_bins,
+                                   embeddingparams=self.pitch_embedding,)
     
     def get_energy_embedding(self, x, target, mask, control):
-        prediction = self.energy_predictor(x, mask)
-        if target is not None:
-            embedding = self.energy_embedding(torch.bucketize(target, self.energy_bins))
-        else:
-            prediction = prediction * control
-            embedding = self.energy_embedding(
-                torch.bucketize(prediction, self.energy_bins)
-            )
-        return prediction, embedding
+        return self._get_embedding(x, target, mask, control,
+                                   predictor=self.energy_predictor,
+                                   bins=self.energy_bins,
+                                   embeddingparams=self.energy_embedding,)
     
     def forward(
         self,
@@ -83,15 +94,15 @@ class ProsodyPredictor(nn.Module):
         mel_mask=None,
         pitch_target=None,  # definitely not used in directmapping embedding_method
         energy_target=None,  # definitely not used in directmapping embedding_method
-        p_control=1.0,
+        p_control=1.0,  # Invalid in classification mode
     ):
-        if self.embedding_method == self.QUANTIZATION:
-            pitch_prediction, pitch_embedding = self.get_pitch_embedding(
+        if self.embedding_method != self.DIRECTMAPPING:
+            pitch_prediction, pitch_embedding, pitch_target_embedding_idx = self.get_pitch_embedding(
                 x, pitch_target, mel_mask, p_control
             )
             x = x + pitch_embedding
             
-            energy_prediction, energy_embedding = self.get_energy_embedding(
+            energy_prediction, energy_embedding, energy_target_embedding_idx = self.get_energy_embedding(
                 x, energy_target, mel_mask, p_control
             )
             x = x + energy_embedding
@@ -110,5 +121,7 @@ class ProsodyPredictor(nn.Module):
             "output":x,
             "pitch_pred":pitch_prediction,
             "energy_pred":energy_prediction,
+            "pitch_class": pitch_target_embedding_idx,
+            "energy_class": energy_target_embedding_idx,
             "mel_mask":mel_mask,
         }

@@ -51,7 +51,7 @@ def train(rank, a, h, avhubert_config):
         prosody_minmax_dict = {
             "embedding_method":h.embedding_method,
         }
-        if h.embedding_method == ProsodyPredictor.QUANTIZATION:
+        if h.embedding_method != ProsodyPredictor.DIRECTMAPPING:
             prosody_minmax_dict.update({  
                 "pitch_min":h.pitch_min,
                 "pitch_max":h.pitch_max,
@@ -193,9 +193,20 @@ def train(rank, a, h, avhubert_config):
             if h.prosody_type is not None:
                 pitch_predictions = generator_out["prosody"]["pitch_pred"]
                 energy_predictions = generator_out["prosody"]["energy_pred"]
-                
-                pitch_loss = F.mse_loss(pitch_predictions.masked_select(~mel_padding_mask), pitch_targets.masked_select(~mel_padding_mask))
-                energy_loss = F.mse_loss(energy_predictions.masked_select(~mel_padding_mask), energy_targets.masked_select(~mel_padding_mask))
+                if h.embedding_method != ProsodyPredictor.CLASSIFICATION:
+                    pitch_loss = F.mse_loss(pitch_predictions.masked_select(~mel_padding_mask), pitch_targets.masked_select(~mel_padding_mask))
+                    energy_loss = F.mse_loss(energy_predictions.masked_select(~mel_padding_mask), energy_targets.masked_select(~mel_padding_mask))
+                else:
+                    pitch_targets = generator_out["prosody"]["pitch_class"]
+                    energy_targets = generator_out["prosody"]["energy_class"]
+                    C = pitch_predictions.shape[-1]
+                    pitch_predictions = pitch_predictions.masked_select((~mel_padding_mask).unsqueeze(-1)).reshape(-1, C)
+                    pitch_targets = pitch_targets.masked_select(~mel_padding_mask)
+                    C = energy_predictions.shape[-1]
+                    energy_predictions = energy_predictions.masked_select((~mel_padding_mask).unsqueeze(-1)).reshape(-1, C)
+                    energy_targets = energy_targets.masked_select(~mel_padding_mask)
+                    pitch_loss = F.cross_entropy(pitch_predictions, pitch_targets)
+                    energy_loss = F.cross_entropy(energy_predictions, energy_targets)
                 if h.norm_mode == 'original':
                     pitch_loss = h.pitch_scale*pitch_loss
                     energy_loss = h.energy_scale*energy_loss
