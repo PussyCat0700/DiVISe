@@ -31,8 +31,8 @@
     "prosody_type":"pyworld",
     "pitch_min":-4.0,
     "pitch_max":13.0,
-    "energy_min":-3.0,
-    "energy_max":12.0,
+    "energy_min":-2.0,
+    "energy_max":8.0,
     "norm_mode": "meanvar",
     "embedding_method":"quantization",
 
