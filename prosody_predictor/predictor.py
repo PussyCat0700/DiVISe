@@ -13,7 +13,8 @@ class ProsodyPredictor(nn.Module):
     QUANTIZATION = 'quantization'
     DIRECTMAPPING = 'directmapping'
     CLASSIFICATION = 'classification'
-    EMBEDDING_METHODS = {QUANTIZATION, DIRECTMAPPING, CLASSIFICATION}
+    QUANTIZATION_LOG_ENERGY = 'quantization_log_energy'
+    EMBEDDING_METHODS = {QUANTIZATION, DIRECTMAPPING, CLASSIFICATION, QUANTIZATION_LOG_ENERGY}
     # TODO: check pitch/energy min/max for LRS3
     def __init__(self, 
                  embedding_method:str,
@@ -30,9 +31,12 @@ class ProsodyPredictor(nn.Module):
         self.pitch_predictor = Predictor(in_dim=encoder_hidden, out_dim=out_dim)
         self.energy_predictor = Predictor(in_dim=encoder_hidden, out_dim=out_dim)
         if self.embedding_method != self.DIRECTMAPPING:
-            # pitch_quantization ="log"
-            pitch_quantization ="linear"  # TODO: linear should be enough? Verify.
-            energy_quantization = "linear"
+            # pitch_quantization ="log" for pyworld pitch
+            pitch_quantization ="linear"
+            if self.embedding_method == self.QUANTIZATION_LOG_ENERGY:
+                energy_quantization = "log"
+            else:
+                energy_quantization = "linear"
             n_bins = n_bins
             assert pitch_quantization in ["linear", "log"]
             assert energy_quantization in ["linear", "log"]
