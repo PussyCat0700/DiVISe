@@ -246,6 +246,7 @@ def train(rank, a, h, avhubert_config):
 
             y_df_hat_r, y_df_hat_g, fmap_f_r, fmap_f_g = mpd(y, y_g_hat)
             y_ds_hat_r, y_ds_hat_g, fmap_s_r, fmap_s_g = msd(y, y_g_hat)
+            # TODO: Add mask for these GAN losses, which is however absent in HiFi-GAN's original setting?
             loss_fm_f = feature_loss(fmap_f_r, fmap_f_g)
             loss_fm_s = feature_loss(fmap_s_r, fmap_s_g)
             loss_gen_f, losses_gen_f = generator_loss(y_df_hat_g)
@@ -260,8 +261,8 @@ def train(rank, a, h, avhubert_config):
                 # STDOUT logging
                 if steps % a.stdout_interval == 0:
                     with torch.no_grad():
-                        mel_error_generator = F.l1_loss(y_mel, y_g_hat_mel).item()
-                        mel_error_avhubert = F.l1_loss(y_mel, y_g_avhubert_mel).item()
+                        mel_error_generator = F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_hat_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
+                        mel_error_avhubert = F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_avhubert_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
 
                     pbar.set_description('Epoch: {:d}, Gen Loss Total : {:4.3f}, Mel-Spec. Error : {:4.3f}, s/b : {:4.3f}'.
                           format(epoch, loss_gen_all, mel_error_generator, time.time() - start_b))
@@ -316,8 +317,8 @@ def train(rank, a, h, avhubert_config):
                     y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate,
                                                     h.hop_size, h.win_size,
                                                     h.fmin, h.fmax_for_loss)
-                    val_err_tot["mel_spec_error_generator"] += F.l1_loss(y_mel, y_g_hat_mel).item()
-                    val_err_tot["mel_spec_error_avhubert"] += F.l1_loss(y_mel, y_g_avhubert_mel).item()
+                    val_err_tot["mel_spec_error_generator"] += F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_hat_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
+                    val_err_tot["mel_spec_error_avhubert"] += F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_avhubert_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
                     audio_metrics = compute_audio_metrics_torch(y_g_hat, y, 16000)
                     for audio_metric in audio_metrics:
                         n_batch = len(audio_metrics)
@@ -389,7 +390,7 @@ def main():
     parser.add_argument('--hifigan_config', default='conf/hifigan/video2speech_template.json')  # TODO: Change back in formal release
     parser.add_argument('--avhubert_config', default='conf/avhubert/base_avhubert.yaml')
     parser.add_argument('--avhubert_ckpt', help='if specified, will load pretrained weight onto AVHuBERTModel')
-    parser.add_argument('--training_epochs', default=100, type=int)
+    parser.add_argument('--training_epochs', default=30, type=int)
     parser.add_argument('--stdout_interval', default=5, type=int)
     parser.add_argument('--summary_interval', default=100, type=int)
     parser.add_argument('--wandb', action='store_true')
