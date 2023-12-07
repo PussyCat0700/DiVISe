@@ -25,6 +25,7 @@ from models import AVHuBERTGenerator, MultiPeriodDiscriminator, MultiScaleDiscri
     discriminator_loss
 from utils import plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint
 from prosody_predictor.predictor import ProsodyPredictor
+from audio.eval_utils import compute_audio_metrics_torch
 
 torch.backends.cudnn.benchmark = True
 logging.basicConfig(
@@ -292,6 +293,9 @@ def train(rank, a, h, avhubert_config):
             val_err_tot = {
                 "mel_spec_error_generator": 0,
                 "mel_spec_error_avhubert": 0,
+                "stoi":0,
+                "estoi":0,
+                "pesq":0,
             }
             with torch.no_grad():
                 pbar2 = tqdm(validation_loader, desc="Validation in progress...")
@@ -314,6 +318,12 @@ def train(rank, a, h, avhubert_config):
                                                     h.fmin, h.fmax_for_loss)
                     val_err_tot["mel_spec_error_generator"] += F.l1_loss(y_mel, y_g_hat_mel).item()
                     val_err_tot["mel_spec_error_avhubert"] += F.l1_loss(y_mel, y_g_avhubert_mel).item()
+                    audio_metrics = compute_audio_metrics_torch(y_g_hat, y, 16000)
+                    for audio_metric in audio_metrics:
+                        n_batch = len(audio_metrics)
+                        val_err_tot["stoi"] += audio_metric["stoi"] / n_batch
+                        val_err_tot["estoi"] += audio_metric["estoi"] / n_batch
+                        val_err_tot["pesq"] += audio_metric["pesq"] / n_batch
 
                     if j <= 4:
                         # save first few validation samples
