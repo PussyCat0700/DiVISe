@@ -305,6 +305,8 @@ def train(rank, a, h, avhubert_config):
                 for j, batch in enumerate(pbar2):
                     avhubert_source_batch = batch["net_input"]["source"]
                     y = avhubert_source_batch["audio"].to(device)
+                    mel_padding_mask = batch["net_input"]["padding_mask_mel"].to(device)
+                    wav_padding_mask = batch["net_input"]["padding_mask_wav"].to(device)
                     y_mel = mel_spectrogram(y, h.n_fft, h.num_mels,
                                         h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax,
                                         center=False)
