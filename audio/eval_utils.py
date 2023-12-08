@@ -5,9 +5,9 @@ import torch
 from cypesq import NoUtterancesError
 import logging
 logger = logging.Logger(__name__)
-def compute_audio_metrics_torch(degs:torch.Tensor, refs:torch.Tensor, rate:int):
-    degs = [x for x in degs.squeeze().detach().cpu().numpy()]
-    refs = [x for x in refs.squeeze().detach().cpu().numpy()]
+def compute_audio_metrics_torch(degs:torch.Tensor, refs:torch.Tensor, rate:int, wav_padding_mask:torch.Tensor=None):
+    degs = [x.masked_select(mask).cpu().numpy() for mask, x in zip(wav_padding_mask, degs.squeeze().detach())]
+    refs = [x.masked_select(mask).cpu().numpy() for mask, x in zip(wav_padding_mask, refs.squeeze().detach())]
     return compute_audio_metrics_numpy(degs, refs, rate)
 def compute_audio_metrics_numpy(degs:np.array, refs:np.array, rate:int):
     """

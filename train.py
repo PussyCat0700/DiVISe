@@ -323,7 +323,7 @@ def train(rank, a, h, avhubert_config):
                                                     h.fmin, h.fmax_for_loss)
                     val_err_tot["mel_spec_error_generator"] += F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_hat_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
                     val_err_tot["mel_spec_error_avhubert"] += F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_avhubert_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
-                    audio_metrics = compute_audio_metrics_torch(y_g_hat, y, 16000)
+                    audio_metrics = compute_audio_metrics_torch(y_g_hat, y, 16000, ~wav_padding_mask)
                     for audio_metric in audio_metrics:
                         n_batch = len(audio_metrics)
                         val_err_tot["stoi"] += audio_metric["stoi"] / n_batch
