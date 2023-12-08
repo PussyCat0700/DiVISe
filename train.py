@@ -158,6 +158,7 @@ def train(rank, a, h, avhubert_config):
             avhubert_source_batch = batch["net_input"]["source"]
             y = avhubert_source_batch["audio"].to(device)
             mel_padding_mask = batch["net_input"]["padding_mask_mel"].to(device)
+            wav_padding_mask = batch["net_input"]["padding_mask_wav"].to(device)
             y_dict = mel_spectrogram_and_energy(y, h.n_fft, h.num_mels,
                                   h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax,
                                   center=False)
@@ -218,13 +219,14 @@ def train(rank, a, h, avhubert_config):
 
             optim_d.zero_grad()
 
+            # TODO: Add mask for these GAN losses, which is however absent in HiFi-GAN's original setting?
             # MPD
             y_df_hat_r, y_df_hat_g, _, _ = mpd(y, y_g_hat.detach())
-            loss_disc_f, losses_disc_f_r, losses_disc_f_g = discriminator_loss(y_df_hat_r, y_df_hat_g)
+            loss_disc_f, losses_disc_f_r, losses_disc_f_g = discriminator_loss(y_df_hat_r, y_df_hat_g, ~wav_padding_mask, 'mpd')
 
             # MSD
             y_ds_hat_r, y_ds_hat_g, _, _ = msd(y, y_g_hat.detach())
-            loss_disc_s, losses_disc_s_r, losses_disc_s_g = discriminator_loss(y_ds_hat_r, y_ds_hat_g)
+            loss_disc_s, losses_disc_s_r, losses_disc_s_g = discriminator_loss(y_ds_hat_r, y_ds_hat_g, ~wav_padding_mask, 'msd')
 
             loss_disc_all = loss_disc_s + loss_disc_f
 
@@ -246,11 +248,11 @@ def train(rank, a, h, avhubert_config):
 
             y_df_hat_r, y_df_hat_g, fmap_f_r, fmap_f_g = mpd(y, y_g_hat)
             y_ds_hat_r, y_ds_hat_g, fmap_s_r, fmap_s_g = msd(y, y_g_hat)
-            # TODO: Add mask for these GAN losses, which is however absent in HiFi-GAN's original setting?
+            # TODO: If masked loss is nice, apply it on feature_loss (which will be troublesome work too).
             loss_fm_f = feature_loss(fmap_f_r, fmap_f_g)
             loss_fm_s = feature_loss(fmap_s_r, fmap_s_g)
-            loss_gen_f, losses_gen_f = generator_loss(y_df_hat_g)
-            loss_gen_s, losses_gen_s = generator_loss(y_ds_hat_g)
+            loss_gen_f, losses_gen_f = generator_loss(y_df_hat_g, ~wav_padding_mask, 'mpd')
+            loss_gen_s, losses_gen_s = generator_loss(y_ds_hat_g, ~wav_padding_mask, 'msd')
             loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel + loss_mel_avhubert
             if h.prosody_type is not None:
                 loss_gen_all += prosody_loss

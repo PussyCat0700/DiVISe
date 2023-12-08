@@ -11,6 +11,104 @@ matplotlib.use("Agg")
 import matplotlib.pylab as plt
 from scipy.io.wavfile import write
 
+def _basic_conv_variation(x, kernel_size, padding, stride):
+    return torch.floor((x-kernel_size+2*padding)/stride+1)
+
+def _get_mask(mask_lengths: torch.Tensor)->torch.Tensor:
+    """get mask according to mask_lengths
+
+    Args:
+        mask_lengths (torch.Tensor): Tensor containing length of waveform
+
+    Returns:
+        torch.Tensor: shape (B, T'max) 
+    """
+    mask_lengths = mask_lengths.int().tolist()  # list of int
+    output_mask = torch.nn.utils.rnn.pad_sequence([torch.ones(mask_length).bool() for mask_length in mask_lengths], batch_first=True)
+    return output_mask
+
+def mpd_length_variator(x:torch.Tensor, period:int):
+    """length transform function from wavform to mpd outputs
+
+    Args:
+        x (torch.Tensor): a tensor containing length of waveform
+        period (int): periods in MPD
+
+    Returns:
+        torch.Tensor: a tensor containing transformed lengths.
+    """
+    kernel_size=5
+    stride=3
+    assert period>0, f'{period=} but is expected to >0'
+    # pad first
+    x_mod_period = x%period
+    x = x.where(x_mod_period==0, x+period-x_mod_period)
+    assert (x%period == 0).all(), f'expected {x}%{period}==0, but got {x%period}'
+    x = x // period
+
+    for _ in range(4):
+        padding = get_padding(5, 1)
+        x = _basic_conv_variation(x, kernel_size=kernel_size, padding=padding, stride=stride)
+    x *=period
+    return x
+
+def msd_length_variator(x:torch.Tensor):
+    """length transform function from wavform to msd outputs
+
+    Args:
+        x (torch.Tensor): a tensor containing length of waveform
+
+    Returns:
+        torch.Tensor: a tensor containing transformed lengths.
+    """
+    # x is a tensor containing length of waveform
+    kernels = [15, 41, 41, 41, 41, 41, 5]
+    strides = [1, 2, 2, 4, 4, 1, 1]
+    paddings = [7, 20, 20, 20, 20, 20, 2]
+    for kernel, padding, stride in zip(kernels, paddings, strides):
+        x = _basic_conv_variation(x, kernel_size=kernel, padding=padding, stride=stride)
+    return x
+
+def mpd_length_variators(in_mask:torch.Tensor):
+    """transform in_mask into a series of loss masks for different layers of mpd
+
+    Args:
+        in_mask (torch.Tensor): padding mask for waveform
+            It is a tensor of shape (..., max_length_in). Unmasked region should be filled with True.
+
+    Returns:
+        List[torch.Tensor]: a series of loss masks for different layers of mpd
+    """
+    ret_masks = []
+    x = in_mask.sum(dim=-1)
+    periods = [2, 3, 5, 7, 11]
+    ys = [mpd_length_variator(x, period) for period in periods]
+    for y in ys:
+        y_mask = _get_mask(y).to(in_mask.device)
+        ret_masks.append(y_mask)
+    return ret_masks
+
+def msd_length_variators(in_mask:torch.Tensor):
+    """transform in_mask into a series of loss masks for different layers of msd
+
+    Args:
+        in_mask (torch.Tensor): padding mask for waveform
+            It is a tensor of shape (..., max_length_in). Unmasked region should be filled with True.
+
+    Returns:
+        List[torch.Tensor]: a series of loss masks for different layers of msd
+    """
+    ret_masks = []
+    x = in_mask.sum(dim=-1)
+    for i in range(3):
+        if i!=0:
+            x = _basic_conv_variation(x, kernel_size=4, padding=2, stride=2)
+        y = x
+        y = msd_length_variator(y)
+        y_mask = _get_mask(y).to(in_mask.device)
+        ret_masks.append(y_mask)
+    return ret_masks
+
 def save_wav_16khz(wav_outdir:str, wav:torch.Tensor):
     """saves audio from item in AVHubertDataset
 

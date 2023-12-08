@@ -4,7 +4,7 @@ import torch.nn as nn
 from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
 from avhubert.avhubert_as_upstream import AVHubertEncoder
-from utils import init_weights, get_padding
+from utils import init_weights, get_padding, mpd_length_variators, msd_length_variators
 
 LRELU_SLOPE = 0.1
 
@@ -275,6 +275,25 @@ class MultiScaleDiscriminator(torch.nn.Module):
         return y_d_rs, y_d_gs, fmap_rs, fmap_gs
 
 
+def _get_varied_mask(wav_mask, loss_type, default_length):
+    if wav_mask is not None:
+        if loss_type == 'msd':
+            loss_masks = msd_length_variators(wav_mask)
+        elif loss_type == 'mpd':
+            loss_masks = mpd_length_variators(wav_mask)
+    else:
+        loss_masks = [None] * default_length
+    return loss_masks
+
+def _patch_for_unaligned_mask(loss_mask, loss_input_len):
+    loss_mask_len = loss_mask.shape[-1]
+    diff = loss_input_len - loss_mask_len
+    if diff > 0:
+        # This will only happen when input audio finishes sooner than its video clip counterpart.
+        padding = torch.zeros((*loss_mask.shape[:-1], diff), device=loss_mask.device).bool()
+        loss_mask = torch.cat((loss_mask, padding), dim=-1)
+    return loss_mask
+
 def feature_loss(fmap_r, fmap_g):
     loss = 0
     for dr, dg in zip(fmap_r, fmap_g):
@@ -284,13 +303,20 @@ def feature_loss(fmap_r, fmap_g):
     return loss*2
 
 
-def discriminator_loss(disc_real_outputs, disc_generated_outputs):
+def discriminator_loss(disc_real_outputs, disc_generated_outputs, wav_mask=None, loss_type:str=None):
     loss = 0
     r_losses = []
     g_losses = []
-    for dr, dg in zip(disc_real_outputs, disc_generated_outputs):
-        r_loss = torch.mean((1-dr)**2)
-        g_loss = torch.mean(dg**2)
+    loss_masks = _get_varied_mask(wav_mask, loss_type, len(disc_generated_outputs))
+    for dr, dg, loss_mask in zip(disc_real_outputs, disc_generated_outputs, loss_masks):
+        r_loss_input = (1-dr)**2
+        g_loss_input = dg**2
+        if loss_mask is not None:
+            loss_mask = _patch_for_unaligned_mask(loss_mask, loss_input_len=r_loss_input.shape[-1])
+            r_loss_input = r_loss_input.masked_select(loss_mask)
+            g_loss_input = g_loss_input.masked_select(loss_mask)
+        r_loss = torch.mean(r_loss_input)
+        g_loss = torch.mean(g_loss_input)
         loss += (r_loss + g_loss)
         r_losses.append(r_loss.item())
         g_losses.append(g_loss.item())
@@ -298,11 +324,16 @@ def discriminator_loss(disc_real_outputs, disc_generated_outputs):
     return loss, r_losses, g_losses
 
 
-def generator_loss(disc_outputs):
+def generator_loss(disc_outputs, wav_mask=None, loss_type:str=None):
     loss = 0
     gen_losses = []
-    for dg in disc_outputs:
-        l = torch.mean((1-dg)**2)
+    loss_masks = _get_varied_mask(wav_mask, loss_type, len(disc_outputs))
+    for dg, loss_mask in zip(disc_outputs, loss_masks):
+        g_loss_input = (1-dg)**2
+        if loss_mask is not None:
+            loss_mask = _patch_for_unaligned_mask(loss_mask, loss_input_len=g_loss_input.shape[-1])
+            g_loss_input = g_loss_input.masked_select(loss_mask)
+        l = torch.mean(g_loss_input)
         gen_losses.append(l)
         loss += l
 
