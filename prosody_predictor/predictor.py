@@ -95,7 +95,7 @@ class ProsodyPredictor(nn.Module):
     def forward(
         self,
         x,
-        mel_mask=None,
+        mel_mask=None,  # masked regions should be filled with false.
         pitch_target=None,  # definitely not used in directmapping embedding_method
         energy_target=None,  # definitely not used in directmapping embedding_method
         p_control=1.0,  # Invalid in classification mode

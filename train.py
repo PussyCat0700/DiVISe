@@ -189,7 +189,7 @@ def train(rank, a, h, avhubert_config):
                     # keys are param names of forward func of ProsodyPredictor
                     prosody_target["energy_target"] = energy_targets
                     prosody_target["pitch_target"] = pitch_targets
-            generator_out = generator(avhubert_source_batch["video"].to(device), prosody_target)
+            generator_out = generator(avhubert_source_batch["video"].to(device), prosody_target, ~mel_padding_mask)
             y_g_hat = generator_out["wav_generated"]
             y_g_avhubert_mel = generator_out["melspec_out"]
             if h.prosody_type is not None:
@@ -315,7 +315,7 @@ def train(rank, a, h, avhubert_config):
                         "pitch_target":None,
                         "energy_target":None,
                     }
-                    generator_out = generator(avhubert_source_batch["video"].to(device), prosody_target)
+                    generator_out = generator(avhubert_source_batch["video"].to(device), prosody_target, ~mel_padding_mask)
                     y_g_hat = generator_out["wav_generated"]
                     y_g_avhubert_mel = generator_out["melspec_out"]
                     y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate,

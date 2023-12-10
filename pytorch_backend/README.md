@@ -1,3 +1,3 @@
 This is a conformer implementation transplanted from [Visual Speech Recognition for Multiple Languages in the Wild](https://arxiv.org/abs/2202.13084) by Pingchuan Ma, Stavros Petridis, Maja Pantic. Reference of original code can be found [here](https://github.com/mpc001/Visual_Speech_Recognition_for_Multiple_Languages/tree/master/espnet/nets/pytorch_backend)
 
-Note that I have deleted ResNet frontend module of Conformer blocks since they're not needed.
+Note that I have deleted ResNet frontend module of Conformer blocks since they're not needed. There are also self-made modifications on padding masks so note that this is NOT totally identical to original implementation. Detailed local changes can be tracked on git history.

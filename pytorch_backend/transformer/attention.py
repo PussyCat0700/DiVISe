@@ -69,13 +69,19 @@ class MultiHeadedAttention(nn.Module):
         """
         n_batch = value.size(0)
         if mask is not None:
-            mask = mask.unsqueeze(1).eq(0)  # (batch, 1, *, time2)
             min_value = float(
                 numpy.finfo(torch.tensor(0, dtype=scores.dtype).numpy().dtype).min
             )
-            scores = scores.masked_fill(mask, min_value)
+            B, T = mask.shape[0], mask.shape[1]
+            mask = mask.eq(0)
+            trig_mask = torch.zeros(B, T, T).bool().to(mask.device)
+            trig_mask[mask] = True
+            trig_mask = trig_mask.transpose(-1, -2)
+            trig_mask[mask] = True
+            trig_mask = trig_mask.unsqueeze(1)  # to suit MHA (batch, 1, *, time2)
+            scores = scores.masked_fill(trig_mask, min_value)
             self.attn = torch.softmax(scores, dim=-1).masked_fill(
-                mask, 0.0
+                trig_mask, 0.0
             )  # (batch, head, time1, time2)
         else:
             self.attn = torch.softmax(scores, dim=-1)  # (batch, head, time1, time2)

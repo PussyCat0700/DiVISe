@@ -132,7 +132,7 @@ class AVHubertEncoder(nn.Module):
         self.avhubert2downstream = torch.nn.Linear(768, self.attention_dim*4)
         self.attention2mel = torch.nn.Linear(self.attention_dim, num_mels)
     
-    def forward(self, source, prosody_target):
+    def forward(self, source, prosody_target, mel_mask=None):
         # source should only include video
         encoder_out, feature, mask = self.avhubert_model.extract_finetune_with_feature(source)  # (bs, vidlen, 768)
         encoder_out = self.avhubert2downstream(encoder_out)  # (bs, vidlen, attention_dim*4)
@@ -140,11 +140,11 @@ class AVHubertEncoder(nn.Module):
         # (bs, vidlen, attention_dim*4) -> (bs, mellen=4*vidlen, attention_dim)
         encoder_out = encoder_out.reshape(*encoder_out.shape[:-2], -1, self.attention_dim)
         if self.use_prosody:
-            prosody_info = self.prosody_predictor(encoder_out, **prosody_target)
+            prosody_info = self.prosody_predictor(encoder_out, mel_mask, **prosody_target)
             encoder_out = prosody_info['output']
         
         melspec_out_chunked = self.attention2mel(encoder_out)  # (bs, mellen, 80)
-        encoder_out = self.conformer_encoder(encoder_out)
+        encoder_out = self.conformer_encoder(encoder_out, mel_mask)
         
         return {"visual_feature":feature,  # feature is still (bs, vidlen, 768)
                 "melspec_out":melspec_out_chunked,  # (bs, mellen, 80)

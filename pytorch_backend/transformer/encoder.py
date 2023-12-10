@@ -269,6 +269,6 @@ class ConformerEncoder(torch.nn.Module):
                                input_layer=None,
                                **kwargs,)
     
-    def forward(self, xs):
-        x, mask = self.encoder(xs)  # (bs, inlen, attention_dim)
+    def forward(self, xs, masks):
+        x, mask = self.encoder(xs, masks)  # (bs, inlen, attention_dim)
         return x
