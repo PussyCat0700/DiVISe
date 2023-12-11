@@ -32,7 +32,7 @@
     "pitch_min":-1.0,
     "pitch_max":1.0,
     "energy_min":0.0,
-    "energy_max":250.0,
+    "energy_max":140.0,
     "pitch_scale":1.0,
     "energy_scale":1.0,
     "norm_mode": "original",
