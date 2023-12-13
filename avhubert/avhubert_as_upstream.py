@@ -121,8 +121,9 @@ class AVHubertEncoder(nn.Module):
             "attention_dim":512,
         }
     }
-    def __init__(self, cfg, num_mels, prosody_minmax_dict, size="M") -> None:
+    def __init__(self, cfg, num_mels, prosody_minmax_dict, size="M", mel_before_conformer=False) -> None:
         super().__init__()
+        self.mel_before_conformer = mel_before_conformer
         self.attention_dim = self.lookup_table[size]["attention_dim"]
         self.avhubert_model = AVHubertModel(cfg=cfg)
         self.use_prosody = prosody_minmax_dict is not None
@@ -143,8 +144,11 @@ class AVHubertEncoder(nn.Module):
             prosody_info = self.prosody_predictor(encoder_out, mel_mask, **prosody_target)
             encoder_out = prosody_info['output']
         
-        melspec_out_chunked = self.attention2mel(encoder_out)  # (bs, mellen, 80)
+        if self.mel_before_conformer:
+            melspec_out_chunked = self.attention2mel(encoder_out)  # (bs, mellen, 80)
         encoder_out = self.conformer_encoder(encoder_out, mel_mask)
+        if not self.mel_before_conformer:
+            melspec_out_chunked = self.attention2mel(encoder_out)  # (bs, mellen, 80)
         
         return {"visual_feature":feature,  # feature is still (bs, vidlen, 768)
                 "melspec_out":melspec_out_chunked,  # (bs, mellen, 80)

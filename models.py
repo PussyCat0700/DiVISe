@@ -127,21 +127,28 @@ class Generator(torch.nn.Module):
         remove_weight_norm(self.conv_post)
     
 class AVHuBERTGenerator(nn.Module):
-    def __init__(self, hifigenerator_config, avhubert_model_config, prosody_minmax_dict) -> None:
+    def __init__(self, hifigenerator_config, avhubert_model_config, prosody_minmax_dict, with_generator:bool) -> None:
         super().__init__()
-        self.frontend_with_encoder = AVHubertEncoder(avhubert_model_config, hifigenerator_config.num_mels, prosody_minmax_dict=prosody_minmax_dict)
-        attention_dim = self.frontend_with_encoder.attention_dim
-        self.generator = Generator(hifigenerator_config, attention_dim)
+        # Intuitively I think generating mel-spectrograms after conformer will be better regardless of generator.
+        # To load runs done by previous commits, set mel_before_conformer to True.
+        self.frontend_with_encoder = AVHubertEncoder(avhubert_model_config, hifigenerator_config.num_mels, prosody_minmax_dict=prosody_minmax_dict, mel_before_conformer=False)
+        self.with_generator = with_generator
+        if self.with_generator:
+            attention_dim = self.frontend_with_encoder.attention_dim
+            self.generator = Generator(hifigenerator_config, attention_dim)
     
     def forward(self, video, prosody_targets, mel_masks=None):
         avhubert_input = {"video": video, "audio": None,}
         encoder_out = self.frontend_with_encoder(avhubert_input, prosody_targets, mel_masks)
         feature_visual = encoder_out["visual_feature"]  # TODO: feed into Generator.
-        wav_generated = self.generator(encoder_out["output"])  # generator takes in tensor shaped (bs, mellen, attention_dim)
+        if self.with_generator:
+            wav_generated = self.generator(encoder_out["output"])  # generator takes in tensor shaped (bs, mellen, attention_dim)
+        else:
+            wav_generated = None
         mel_generated = encoder_out["melspec_out"]
         # (bs, mellen, num_mels=80) -> (bs, 80, mellen)
         mel_generated = mel_generated.permute(0, 2, 1).contiguous()
-        return {"wav_generated":wav_generated,  # (bs, wavlen)
+        return {"wav_generated":wav_generated,  # (bs, wavlen) or None if self.with_generator is False
                 "melspec_out":mel_generated,  # (bs, mellen, 80)
                 "prosody": encoder_out["prosody"],
                 }
