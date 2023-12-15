@@ -17,10 +17,9 @@
 
     "segment_size": 57600,
     "num_mels": 80, 
-    "num_freq": 512,
-    "n_fft": 512,
+    "n_fft": 640,
     "hop_size": 160,
-    "win_size": 512,
+    "win_size": 640,
 
     "sampling_rate": 16000,
 
