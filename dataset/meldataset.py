@@ -44,8 +44,16 @@ def spectral_de_normalize_torch(magnitudes):
     return output
 
 
-mel_basis = {}
-hann_window = {}
+mel_basis = None
+hann_window = None
+def get_mel_basis(sampling_rate, n_fft, num_mels, fmin, fmax, device):
+    mel = librosa_mel_fn(sampling_rate, n_fft, num_mels, fmin, fmax)
+    mel_basis = torch.from_numpy(mel).float().to(device)
+    return mel_basis
+
+def get_hann_window(win_size, device):
+    hann_window = torch.hann_window(win_size).to(device)
+    return hann_window
 
 # TODO: Do we also need to apply wav padding mask before wav is transformed to mel-spectrogram?
 def mel_spectrogram(*args, **kwargs):
@@ -58,26 +66,93 @@ def mel_spectrogram_and_energy(y, n_fft, num_mels, sampling_rate, hop_size, win_
         print('max value is ', torch.max(y))
 
     global mel_basis, hann_window
-    if fmax not in mel_basis:
-        mel = librosa_mel_fn(sampling_rate, n_fft, num_mels, fmin, fmax)
-        mel_basis[str(fmax)+'_'+str(y.device)] = torch.from_numpy(mel).float().to(y.device)
-        hann_window[str(y.device)] = torch.hann_window(win_size).to(y.device)
+    if mel_basis is None:
+        mel_basis = get_mel_basis(sampling_rate, n_fft, num_mels, fmin, fmax, y.device)
+    if hann_window is None:
+        hann_window = get_hann_window(win_size, y.device)
 
     y = torch.nn.functional.pad(y.unsqueeze(1), (int((n_fft-hop_size)/2), int((n_fft-hop_size)/2)), mode='reflect')
     y = y.squeeze(1)
 
-    spec = torch.stft(y, n_fft, hop_length=hop_size, win_length=win_size, window=hann_window[str(y.device)],
-                      center=center, pad_mode='reflect', normalized=False, onesided=True, return_complex=True)
+    spec = torch.stft(y, n_fft, hop_length=hop_size, win_length=win_size, window=hann_window,
+                      center=center, normalized=False, onesided=True, return_complex=True)
     spec = torch.view_as_real(spec)  # to fit torch future features deprecating return_complex=False
 
     magnitude = torch.sqrt(spec.pow(2).sum(-1)+(1e-9))
     energy = torch.norm(magnitude, dim=-2)
 
-    spec = torch.matmul(mel_basis[str(fmax)+'_'+str(y.device)], magnitude)
+    spec = torch.matmul(mel_basis, magnitude)
     spec = spectral_normalize_torch(spec)
 
     return {"spec":spec,
             "energy":energy,}
+
+class MelSpectrogramInverter(torch.nn.Module):
+    def __init__(self, n_fft, num_mels, sampling_rate, hop_size, win_size, fmin, fmax, device) -> None:
+        super().__init__()
+        self.hop_length = hop_size
+        self.n_fft = n_fft
+        self.win_size = win_size
+        mel_basis = get_mel_basis(sampling_rate, n_fft, num_mels, fmin, fmax, device)
+        hann_window = get_hann_window(win_size, device)
+        mel_basis_pseudoinv = torch.linalg.pinv(mel_basis)
+        angles = torch.view_as_real(torch.exp(2j*torch.pi*torch.rand((5000))))  # to fit NCCL backend
+        self.register_buffer('mel_basis', mel_basis_pseudoinv)
+        self.register_buffer('angles', angles)
+        self.register_buffer('hann_window', hann_window)
+        
+    def _move_buffer_to_device(self, device):
+        self.mel_basis = self.mel_basis.to(device)
+        self.angles = self.angles.to(device)
+        self.hann_window = self.hann_window.to(device)
+    
+    def forward(self, mel_spectrogram, fit_length=True):
+        """Converts mel spectrogram to waveform using torch
+        
+        Args:
+            mel_spectrogram (torch.Tensor): torch.Tensor of shape (batch_size, mel_seq_length, num_mel): mel spectrogram input
+            fit_length (bool, optional): If set to True, will pad the output to fit the hop_size upsamling rate perfectly. Defaults to True.
+
+        Returns:
+            torch.Tensor: (torch.Tensor): torch.Tensor of shape (batch_size, 1): reconstructed waveform
+        """
+        self._move_buffer_to_device(mel_spectrogram.device)
+        D = spectral_de_normalize_torch(mel_spectrogram)
+        inv_mid = D.transpose(-1, -2)
+        S = self._mel_to_linear(inv_mid)  # Convert back to linear
+        S = self._griffin_lim(S)
+        if fit_length:
+            S = torch.nn.functional.pad(S, (int(self.hop_length/2), int(self.hop_length/2)), mode='reflect')
+        return S
+    
+    def _mel_to_linear(self, mel_spectrogram):
+        lineared = torch.matmul(self.mel_basis, mel_spectrogram)
+        lineared = torch.clamp(lineared, min=1e-10)
+        return lineared
+    
+    def _istft(self, y):
+        window = self.hann_window
+        return torch.istft(y, self.n_fft, self.hop_length, self.win_size, window=window, return_complex=False)
+    
+    def _stft(self, y):
+        window = self.hann_window
+        return torch.stft(y, self.n_fft, self.hop_length, self.win_size, window=window, return_complex=True)
+    
+    def _griffin_lim(self, S):
+        """librosa implementation of Griffin-Lim
+        Based on https://github.com/librosa/librosa/issues/434
+        """
+        angles = torch.view_as_complex(self.angles[:S.shape[-1]]).unsqueeze(0)
+        S_complex = torch.abs(S)
+        if not torch.is_complex(angles):  # for compatibility
+            angles = torch.view_as_complex(angles)
+        y = self._istft(S_complex * angles)
+        for _ in range(60):
+            angles = torch.angle(self._stft(y))
+            angles = torch.exp(1j * angles)
+            y = self._istft(S_complex * angles)
+        return y
+
 # TODO: pitch should be computed prior to training. It will be a speed bottleneck otherwise.
 # TODO: How about trying out for Kaldi Pitch (beta)? @ https://carolineechen.github.io/audio/main/tutorials/audio_feature_extractions_tutorial.html#kaldi-pitch-beta
 def pitch(wav_batch:torch.Tensor, wav_padding_masks:torch.Tensor, sampling_rate=16000, hop_length=160, mode=None):

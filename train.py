@@ -20,7 +20,7 @@ import torch.multiprocessing as mp
 from torch.distributed import init_process_group
 from torch.nn.parallel import DistributedDataParallel
 from env import AttrDict, build_env
-from dataset.meldataset import mel_spectrogram, mel_spectrogram_and_energy
+from dataset.meldataset import MelSpectrogramInverter, mel_spectrogram, mel_spectrogram_and_energy
 from models import AVHuBERTGenerator, MultiPeriodDiscriminator, MultiScaleDiscriminator, feature_loss, generator_loss,\
     discriminator_loss
 from utils import plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint
@@ -167,6 +167,9 @@ def train(rank, a, h, avhubert_config):
     if a.train_mode == VIDEO2WAV_MODE:
         mpd.train()
         msd.train()
+    if a.train_mode == VIDEO2MEL_MODE:
+        mel2wav_inverter = MelSpectrogramInverter(h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax, 'cpu')
+        mel2wav_inverter.eval()
     for epoch in range(max(0, last_epoch), a.training_epochs):
         train_ratio = epoch / a.training_epochs  # [0, 1-1/a.training_epochs]
         generator.train()
@@ -390,6 +393,8 @@ def train(rank, a, h, avhubert_config):
                             sw.add_figure(f'generated_ep{epoch}/y_hat_spec_{j}',
                                             plot_spectrogram(y_hat_spec.squeeze(0).cpu().numpy()), steps)
                         elif a.train_mode == VIDEO2MEL_MODE:
+                            y_g_hat = mel2wav_inverter(y_g_avhubert_mel[0].unsqueeze(0).detach().cpu().transpose(-1, -2))
+                            sw.add_audio(f'generated_ep{epoch}/y_hat_griffin_lim{j}', y_g_hat, steps, h.sampling_rate)
                             sw.add_figure(f'generated_ep{epoch}/y_hat_vanilla_mel_{j}',
                                             plot_spectrogram(y_g_avhubert_mel[0].squeeze(0).cpu().numpy()), steps)
 
