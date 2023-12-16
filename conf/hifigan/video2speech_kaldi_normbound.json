@@ -31,7 +31,7 @@
     "pitch_min":-1.0,
     "pitch_max":1.0,
     "energy_min":-2.0,
-    "energy_max":8.0,
+    "energy_max":6.0,
     "norm_mode": "meanvar",
     "embedding_method":"quantization",
 
