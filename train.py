@@ -1,7 +1,10 @@
+import editdistance
 import logging
+import random
 import sys
 import warnings
 from omegaconf import OmegaConf
+from transformers import pipeline
 
 from tqdm import tqdm
 
@@ -42,13 +45,14 @@ VIDEO2WAV_MODE = "v2w"
 def initialize_val_terms(train_mode):
     val_err_tot = {
         "mel_spec_error_avhubert": 0,
+        "stoi":0,
+        "estoi":0,
+        "pesq":0,
+        "wer":0,
     }
     if train_mode == VIDEO2WAV_MODE:
         val_err_tot.update({
             "mel_spec_error_generator":0,
-            "stoi":0,
-            "estoi":0,
-            "pesq":0,
         })
     return val_err_tot
 
@@ -168,8 +172,9 @@ def train(rank, a, h, avhubert_config):
         mpd.train()
         msd.train()
     if a.train_mode == VIDEO2MEL_MODE:
-        mel2wav_inverter = MelSpectrogramInverter(h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax, 'cpu')
+        mel2wav_inverter = MelSpectrogramInverter(h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax, device)
         mel2wav_inverter.eval()
+    transcriber = pipeline("automatic-speech-recognition", model="facebook/wav2vec2-base-960h")
     for epoch in range(max(0, last_epoch), a.training_epochs):
         train_ratio = epoch / a.training_epochs  # [0, 1-1/a.training_epochs]
         generator.train()
@@ -351,6 +356,7 @@ def train(rank, a, h, avhubert_config):
                 for j, batch in enumerate(pbar2):
                     avhubert_source_batch = batch["net_input"]["source"]
                     y = avhubert_source_batch["audio"].to(device)
+                    gt_texts = [x.strip() for x in batch["target"]]
                     mel_padding_mask = batch["net_input"]["padding_mask_mel"].to(device)
                     wav_padding_mask = batch["net_input"]["padding_mask_wav"].to(device)
                     y_mel = mel_spectrogram(y, h.n_fft, h.num_mels,
@@ -364,17 +370,28 @@ def train(rank, a, h, avhubert_config):
                     generator_out = generator(avhubert_source_batch["video"].to(device), prosody_target, ~mel_padding_mask)
                     y_g_avhubert_mel = generator_out["melspec_out"]
                     if a.train_mode == VIDEO2WAV_MODE:
-                        y_g_hat = generator_out["wav_generated"]
+                        y_g_hat = generator_out["wav_generated"].detach()
                         y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate,
                                                         h.hop_size, h.win_size,
                                                         h.fmin, h.fmax_for_loss)
                         val_err_tot["mel_spec_error_generator"] += F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_hat_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
-                        audio_metrics = compute_audio_metrics_torch(y_g_hat, y, 16000, ~wav_padding_mask)
-                        for audio_metric in audio_metrics:
-                            n_batch = len(audio_metrics)
-                            val_err_tot["stoi"] += audio_metric["stoi"] / n_batch
-                            val_err_tot["estoi"] += audio_metric["estoi"] / n_batch
-                            val_err_tot["pesq"] += audio_metric["pesq"] / n_batch
+                    elif a.train_mode == VIDEO2MEL_MODE:
+                        y_g_hat = mel2wav_inverter(y_g_avhubert_mel.detach().transpose(-1, -2))
+                    n_batch = len(gt_texts)
+                    for generated_wav, wav_mask, gt_text in zip(y_g_hat, (~wav_padding_mask), gt_texts):
+                        generated_wav = generated_wav.masked_select(wav_mask)
+                        generated_text = transcriber(generated_wav.cpu().numpy())["text"].lower()
+                        edit_dis = editdistance.eval(generated_text, gt_text)
+                        wer = edit_dis / len(gt_text)
+                        val_err_tot["wer"] += wer / n_batch
+                    pbar2.set_description(f'current wer={val_err_tot["wer"]/(j+1)}')
+                    
+                    audio_metrics = compute_audio_metrics_torch(y_g_hat, y, 16000, ~wav_padding_mask)
+                    n_batch = len(audio_metrics)
+                    for audio_metric in audio_metrics:
+                        val_err_tot["stoi"] += audio_metric["stoi"] / n_batch
+                        val_err_tot["estoi"] += audio_metric["estoi"] / n_batch
+                        val_err_tot["pesq"] += audio_metric["pesq"] / n_batch
                     val_err_tot["mel_spec_error_avhubert"] += F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_avhubert_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
 
                     if j <= 4:
@@ -387,14 +404,13 @@ def train(rank, a, h, avhubert_config):
                             sw.add_figure('gt/y_spec_{}'.format(j), plot_spectrogram(y_mel[0].cpu()), steps)
                         if a.train_mode == VIDEO2WAV_MODE:
                             sw.add_audio(f'generated_ep{epoch}/y_hat_{j}', y_g_hat[0], steps, h.sampling_rate)
-                            y_hat_spec = mel_spectrogram(y_g_hat[0].cpu(), h.n_fft, h.num_mels,
+                            y_hat_spec = mel_spectrogram(y_g_hat[0], h.n_fft, h.num_mels,
                                                             h.sampling_rate, h.hop_size, h.win_size,
                                                             h.fmin, h.fmax)
                             sw.add_figure(f'generated_ep{epoch}/y_hat_spec_{j}',
                                             plot_spectrogram(y_hat_spec.squeeze(0).cpu().numpy()), steps)
                         elif a.train_mode == VIDEO2MEL_MODE:
-                            y_g_hat = mel2wav_inverter(y_g_avhubert_mel[0].unsqueeze(0).detach().cpu().transpose(-1, -2))
-                            sw.add_audio(f'generated_ep{epoch}/y_hat_griffin_lim{j}', y_g_hat, steps, h.sampling_rate)
+                            sw.add_audio(f'generated_ep{epoch}/y_hat_griffin_lim{j}', y_g_hat[0], steps, h.sampling_rate)
                             sw.add_figure(f'generated_ep{epoch}/y_hat_vanilla_mel_{j}',
                                             plot_spectrogram(y_g_avhubert_mel[0].squeeze(0).cpu().numpy()), steps)
 
@@ -479,6 +495,14 @@ def main():
     h = AttrDict(json_config)
     if h.prosody_type is not None:
         assert h.norm_mode in ['original', 'meanvar'], f"{h.norm_mode=} which is not a valid way to normalize prosody."
+    if a.train_mode == VIDEO2MEL_MODE:
+        # give random port to avoid collision
+        url = h.dist_config['dist_url']
+        splits = url.split(":")
+        port = int(splits[-1])
+        port -= random.randint(100, 1000)
+        h.dist_config['dist_url'] = ':'.join(splits[:-1]+[str(port)])
+        
     val_term_for_test = initialize_val_terms(a.train_mode)
     # simple hacking for v2m mode
     if a.train_mode == VIDEO2MEL_MODE and h.save_on_metric == 'mel_spec_error_generator':
