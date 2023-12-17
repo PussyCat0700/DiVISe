@@ -46,6 +46,7 @@ class Predictor(nn.Module):
             y = y.squeeze(-1)  # (B, T, 1)->(B, T) 
         elif mask is not None:
             mask = mask.unsqueeze(-1)  # unsqueezed to suit input x of shape (B, T, C)
+        mask = mask.eq(0)
         if mask is not None:
             y = y.masked_fill(mask, 0.0)
         return y
