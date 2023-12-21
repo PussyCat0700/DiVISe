@@ -1,8 +1,10 @@
 import glob
 import os
+import random
 import tempfile
 import cv2
 import matplotlib
+import numpy as np
 import torch
 from torch.nn.utils import weight_norm
 
@@ -10,6 +12,24 @@ from avhubert.avhubert_as_upstream import AVHubertPretrainingConfig
 matplotlib.use("Agg")
 import matplotlib.pylab as plt
 from scipy.io.wavfile import write
+
+def seed_everything(seed):
+    if torch.distributed.is_initialized():
+        rank = torch.distributed.get_rank()
+    else:
+        rank = 0
+    seed = (rank * 100000) + seed
+
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+
+class DataLoaderSeeder:
+    def __init__(self, seed) -> None:
+        self.seed = seed
+    
+    def __call__(self, k):
+        return seed_everything(self.seed + (k * 10000))
 
 def _basic_conv_variation(x, kernel_size, padding, stride):
     return torch.floor((x-kernel_size+2*padding)/stride+1)

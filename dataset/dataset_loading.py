@@ -29,7 +29,7 @@ class AVHuBERTAdaptingCollater:
         batch = self.dataset.collater(samples=samples)
         return batch
 
-def get_dataloader(dataset:AVHubertDataset, batch_size, shuffle, num_workers, dist_sampler=False, pin_memory=True):
+def get_dataloader(dataset:AVHubertDataset, batch_size, shuffle, num_workers, dist_sampler=False, pin_memory=True, seeder=None):
     if dist_sampler:
         sampler = DistributedSampler(dataset, shuffle=shuffle)
         shuffle = None  # sampler option is mutually exclusive with shuffle
@@ -41,7 +41,8 @@ def get_dataloader(dataset:AVHubertDataset, batch_size, shuffle, num_workers, di
                               batch_size=batch_size,
                               pin_memory=pin_memory,
                               drop_last=True,
-                              collate_fn=collate_fn_adapter)
+                              collate_fn=collate_fn_adapter,
+                              worker_init_fn=seeder)
     
     return loader, sampler
 

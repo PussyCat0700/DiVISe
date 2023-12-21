@@ -3,6 +3,7 @@ import logging
 import random
 import sys
 import warnings
+import numpy as np
 from omegaconf import OmegaConf
 from transformers import pipeline
 
@@ -26,7 +27,7 @@ from env import AttrDict, build_env
 from dataset.meldataset import MelSpectrogramInverter, mel_spectrogram, mel_spectrogram_and_energy
 from models import AVHuBERTGenerator, MultiPeriodDiscriminator, MultiScaleDiscriminator, feature_loss, generator_loss,\
     discriminator_loss
-from utils import plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint
+from utils import DataLoaderSeeder, plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint, seed_everything
 from prosody_predictor.predictor import ProsodyPredictor
 from audio.eval_utils import compute_audio_metrics_torch
 
@@ -64,7 +65,7 @@ def train(rank, a, h, avhubert_config):
         init_process_group(backend=h.dist_config['dist_backend'], init_method=h.dist_config['dist_url'],
                            world_size=h.dist_config['world_size'] * h.num_gpus, rank=rank)
 
-    torch.cuda.manual_seed(h.seed)
+    seed_everything(h.seed)
     torch.cuda.set_device(rank)  # A very strong boost. See https://github.com/jik876/hifi-gan/pull/25
     device = torch.device('cuda:{:d}'.format(rank))
     prosody_minmax_dict = None
@@ -155,7 +156,9 @@ def train(rank, a, h, avhubert_config):
                                                 num_workers=h.num_gpus, 
                                                 dist_sampler=h.num_gpus > 1,
                                                 pin_memory=not h.num_gpus > 1,
-                                                shuffle=True)
+                                                shuffle=True,
+                                                seeder=DataLoaderSeeder(h.seed),
+                                                )
 
     if rank == 0:
         validset = load_dataset("valid", avhubert_config["task"])
