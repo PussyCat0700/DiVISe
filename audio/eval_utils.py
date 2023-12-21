@@ -5,6 +5,29 @@ import torch
 from cypesq import NoUtterancesError
 import logging
 logger = logging.Logger(__name__)
+
+class GreedyCTCDecoder(torch.nn.Module):
+    def __init__(self, labels, blank=0):
+        super().__init__()
+        self.labels = labels
+        self.blank = blank
+
+    def forward(self, emission: torch.Tensor, length:int=None) -> str:
+        """Given a sequence emission over labels, get the best path string
+        Args:
+          emission (Tensor): Logit tensors. Shape `[num_seq, num_label]`.
+
+        Returns:
+          str: The resulting transcript
+        """
+        if length is not None:
+            emission = emission[:length]
+        indices = torch.argmax(emission, dim=-1)  # [num_seq,]
+        indices = torch.unique_consecutive(indices, dim=-1)
+        indices = [i for i in indices if i != self.blank]
+        raw_str = "".join([self.labels[i] for i in indices])
+        return raw_str.replace("|", " ").lower().strip()
+
 def compute_audio_metrics_torch(degs:torch.Tensor, refs:torch.Tensor, rate:int, wav_padding_mask:torch.Tensor=None):
     degs = [x.masked_select(mask).cpu().numpy() for mask, x in zip(wav_padding_mask, degs.squeeze().detach())]
     refs = [x.masked_select(mask).cpu().numpy() for mask, x in zip(wav_padding_mask, refs.squeeze().detach())]

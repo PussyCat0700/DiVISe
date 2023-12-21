@@ -5,8 +5,7 @@ import sys
 import warnings
 import numpy as np
 from omegaconf import OmegaConf
-from transformers import pipeline
-
+import torchaudio
 from tqdm import tqdm
 
 from dataset import load_avhubert_config, load_dataset, get_dataloader
@@ -29,7 +28,7 @@ from models import AVHuBERTGenerator, MultiPeriodDiscriminator, MultiScaleDiscri
     discriminator_loss
 from utils import DataLoaderSeeder, plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint, seed_everything
 from prosody_predictor.predictor import ProsodyPredictor
-from audio.eval_utils import compute_audio_metrics_torch
+from audio.eval_utils import GreedyCTCDecoder, compute_audio_metrics_torch
 
 torch.backends.cudnn.benchmark = True
 logging.basicConfig(
@@ -177,7 +176,7 @@ def train(rank, a, h, avhubert_config):
     if a.train_mode == VIDEO2MEL_MODE:
         mel2wav_inverter = MelSpectrogramInverter(h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax, device)
         mel2wav_inverter.eval()
-    transcriber = pipeline("automatic-speech-recognition", model="facebook/wav2vec2-base-960h")
+    bundle = torchaudio.pipelines.WAV2VEC2_ASR_BASE_960H
     for epoch in range(max(0, last_epoch), a.training_epochs):
         train_ratio = epoch / a.training_epochs  # [0, 1-1/a.training_epochs]
         generator.train()
@@ -355,6 +354,8 @@ def train(rank, a, h, avhubert_config):
             val_err_tot = initialize_val_terms(a.train_mode)
                 
             with torch.no_grad():
+                transcriber = bundle.get_model().to(device)
+                valid_greedy_decoder = GreedyCTCDecoder(labels=bundle.get_labels())
                 pbar2 = tqdm(validation_loader, desc="Validation in progress...")
                 for j, batch in enumerate(pbar2):
                     avhubert_source_batch = batch["net_input"]["source"]
@@ -381,12 +382,15 @@ def train(rank, a, h, avhubert_config):
                     elif a.train_mode == VIDEO2MEL_MODE:
                         y_g_hat = mel2wav_inverter(y_g_avhubert_mel.detach().transpose(-1, -2))
                     n_batch = len(gt_texts)
-                    for generated_wav, wav_mask, gt_text in zip(y_g_hat, (~wav_padding_mask), gt_texts):
-                        generated_wav = generated_wav.masked_select(wav_mask)
-                        generated_text = transcriber(generated_wav.cpu().numpy())["text"].lower()
-                        edit_dis = editdistance.eval(generated_text, gt_text)
-                        wer = edit_dis / len(gt_text)
-                        val_err_tot["wer"] += wer / n_batch
+                    with torch.inference_mode():
+                        lengths = (~wav_padding_mask).sum(dim=-1)  # (batch_size,)
+                        # model definition can be found in https://pytorch.org/audio/stable/_modules/torchaudio/models/wav2vec2/model.html
+                        emissions, lengths = transcriber(y_g_hat, lengths)  # length indicates the valid length in time axis of emissions
+                        for emission, gt_text, length in zip(emissions, gt_texts, lengths):
+                            generated_text = valid_greedy_decoder(emission, length)
+                            edit_dis = editdistance.eval(generated_text, gt_text)
+                            wer = edit_dis / len(gt_text)
+                            val_err_tot["wer"] += wer / n_batch
                     pbar2.set_description(f'current wer={val_err_tot["wer"]/(j+1)}')
                     
                     audio_metrics = compute_audio_metrics_torch(y_g_hat, y, 16000, ~wav_padding_mask)
@@ -417,6 +421,7 @@ def train(rank, a, h, avhubert_config):
                             sw.add_figure(f'generated_ep{epoch}/y_hat_vanilla_mel_{j}',
                                             plot_spectrogram(y_g_avhubert_mel[0].squeeze(0).cpu().numpy()), steps)
 
+                del transcriber, valid_greedy_decoder
                 for val_err_key, val_err_term in val_err_tot.items():
                     val_err = val_err_term / (j+1)
                     sw.add_scalar(f"validation/{val_err_key}", val_err, steps)
