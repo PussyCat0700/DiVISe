@@ -79,10 +79,16 @@ def train(rank, a, h, avhubert_config):
                 "energy_min":h.energy_min,
                 "energy_max":h.energy_max,
             })
+    unit_dict = None
+    if h.unit_name is not None:
+        unit_dict = {
+            "k":h.k,
+        }
             
     generator = AVHuBERTGenerator(hifigenerator_config=h,
                                   avhubert_model_config=avhubert_config["model"], 
                                   prosody_minmax_dict=prosody_minmax_dict,
+                                  unit_dict=unit_dict,
                                   with_generator=a.train_mode==VIDEO2WAV_MODE,
                                   ).to(device)
     mpd = MultiPeriodDiscriminator().to(device)
@@ -149,7 +155,7 @@ def train(rank, a, h, avhubert_config):
     scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=h.lr_decay, last_epoch=last_epoch)
     if a.train_mode == VIDEO2WAV_MODE:
         scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=h.lr_decay, last_epoch=last_epoch)
-    trainset = load_dataset("train", avhubert_config["task"], h.prosody_type)
+    trainset = load_dataset("train", avhubert_config["task"], h.prosody_type, h.unit_name)
     train_loader, train_sampler = get_dataloader(trainset, 
                                                 batch_size=a.batch_size,
                                                 num_workers=h.num_gpus, 
@@ -218,6 +224,10 @@ def train(rank, a, h, avhubert_config):
                 "pitch_target":None,
                 "energy_target":None,
             }
+            unit_target = {
+                "kmeans_target":None,
+                "kmeans_mask":None,
+            }
             def normalize_prosody(x, m=1e-8):
                 return (x - x.mean(dim=-1, keepdim=True))/(m+x.std(dim=-1, keepdim=True))
             if h.prosody_type is not None:
@@ -236,7 +246,12 @@ def train(rank, a, h, avhubert_config):
                     # keys are param names of forward func of ProsodyPredictor
                     prosody_target["energy_target"] = energy_targets
                     prosody_target["pitch_target"] = pitch_targets
-            generator_out = generator(avhubert_source_batch["video"].to(device), prosody_target, ~mel_padding_mask)
+            if h.unit_name is not None:
+                kmeans_targets = avhubert_source_batch["km"].to(device)
+                kmeans_mask = batch["net_input"]["padding_mask_km"].to(device)
+                unit_target["kmeans_target"] = kmeans_targets
+                unit_target["kmeans_mask"] = kmeans_mask
+            generator_out = generator(avhubert_source_batch["video"].to(device), prosody_target, unit_target, ~mel_padding_mask)
             y_g_avhubert_mel = generator_out["melspec_out"]
             if h.prosody_type is not None:
                 pitch_predictions = generator_out["prosody"]["pitch_pred"]
@@ -259,6 +274,13 @@ def train(rank, a, h, avhubert_config):
                     pitch_loss = h.pitch_scale*pitch_loss
                     energy_loss = h.energy_scale*energy_loss
                 prosody_loss = pitch_loss+energy_loss
+            if h.unit_name is not None:
+                unit_predictions = generator_out["unit"]["kmeans_pred"]
+                C = unit_predictions.shape[-1]
+                unit_predictions = unit_predictions.masked_select((~kmeans_mask).unsqueeze(-1)).reshape(-1, C)
+                kmeans_targets = kmeans_targets.masked_select(~kmeans_mask)
+                unit_loss = F.cross_entropy(unit_predictions, kmeans_targets)
+                unit_loss = h.unit_scale*unit_loss
             if a.train_mode == VIDEO2WAV_MODE:
                 y_g_hat = generator_out["wav_generated"]
                 y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size,
@@ -308,6 +330,8 @@ def train(rank, a, h, avhubert_config):
             loss_gen_all += loss_mel_avhubert
             if h.prosody_type is not None:
                 loss_gen_all += prosody_loss
+            if h.unit_name is not None:
+                loss_gen_all += unit_loss
             loss_gen_all.backward()
             optim_g.step()
 
@@ -336,6 +360,8 @@ def train(rank, a, h, avhubert_config):
                     if h.prosody_type is not None:
                         log_training("pitch_regression_mse", pitch_loss)
                         log_training("energy_regression_mse", energy_loss)
+                    if h.unit_name is not None:
+                        log_training("unit_regression_mse", unit_loss)
                     log_training("epoch", epoch)
                     log_training("alpha_avhubert", alpha_avhubert)
 
@@ -500,6 +526,10 @@ def main():
         data = f.read()
 
     json_config = json.loads(data)
+    if 'prosody_type' not in json_config:
+        json_config['prosody_type'] = None
+    if 'unit_name' not in json_config:
+        json_config['unit_name'] = None
     h = AttrDict(json_config)
     if h.prosody_type is not None:
         assert h.norm_mode in ['original', 'meanvar'], f"{h.norm_mode=} which is not a valid way to normalize prosody."

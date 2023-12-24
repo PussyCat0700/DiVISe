@@ -348,7 +348,9 @@ class AVHubertDataset(FairseqDataset):
             if with_km:
                 km_size = func(km_sizes, self.max_km_sample_size)
                 km_starts = [int(second_start*self.sr_km) for second_start in second_starts]
-                collated_km, _, km_starts = self.collater_wav(km_source, km_size, km_starts)
+                collated_km, padding_mask_km, km_starts = self.collater_wav(km_source, km_size, km_starts)
+            else:
+                padding_mask_km = None
         else:
             collated_audios, audio_starts = None, None
         if video_source is not None:
@@ -363,7 +365,11 @@ class AVHubertDataset(FairseqDataset):
         ]
         targets_list, lengths_list, ntokens_list = self.collater_label_text(targets_by_label)
         source = {"audio": collated_audios, "video": collated_videos, "pitch": collated_pitches, "km": collated_km,}
-        net_input = {"source": source, "padding_mask_wav": padding_mask, "padding_mask_mel": padding_mask_mel,}  # padding_mask_wav is for waveform(16000Hz) and _mel for mel spectrogram(100Hz)
+        net_input = {"source": source, 
+                    "padding_mask_wav": padding_mask, 
+                    "padding_mask_mel": padding_mask_mel,
+                    "padding_mask_km": padding_mask_km,
+                    }  # padding_mask_wav is for waveform(16000Hz), _mel for mel spectrogram(100Hz), _km 50Hz
         batch = {
             "id": torch.LongTensor([s["id"] for s in samples]),
             "net_input": net_input,

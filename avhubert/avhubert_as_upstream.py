@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from fairseq.dataclass.configs import FairseqDataclass
 from typing import Dict, List, Optional, Tuple
 from omegaconf import MISSING, II
-from prosody_predictor.predictor import ProsodyPredictor
+from prosody_predictor.predictor import HuBERTPredictor, ProsodyPredictor
 
 from pytorch_backend.transformer.encoder import ConformerEncoder
 
@@ -121,23 +121,29 @@ class AVHubertEncoder(nn.Module):
             "attention_dim":512,
         }
     }
-    def __init__(self, cfg, num_mels, prosody_minmax_dict, size="M", mel_before_conformer=False) -> None:
+    def __init__(self, cfg, num_mels, prosody_minmax_dict, unit_dict, size="M", mel_before_conformer=False) -> None:
         super().__init__()
         self.mel_before_conformer = mel_before_conformer
         self.attention_dim = self.lookup_table[size]["attention_dim"]
         self.avhubert_model = AVHubertModel(cfg=cfg)
         self.use_prosody = prosody_minmax_dict is not None
+        self.use_hubert_units = unit_dict is not None
         if self.use_prosody:
             self.prosody_predictor = ProsodyPredictor(encoder_hidden=self.attention_dim, **prosody_minmax_dict)
+        if self.use_hubert_units:
+            self.unit_predictor = HuBERTPredictor(**unit_dict)
         self.conformer_encoder = ConformerEncoder(size)
         self.avhubert2downstream = torch.nn.Linear(768, self.attention_dim*4)
         self.attention2mel = torch.nn.Linear(self.attention_dim, num_mels)
     
-    def forward(self, source, prosody_target, mel_mask=None):
+    def forward(self, source, prosody_target, unit_target, mel_mask=None):
         # source should only include video
         encoder_out, feature, mask = self.avhubert_model.extract_finetune_with_feature(source)  # (bs, vidlen, 768)
         encoder_out = self.avhubert2downstream(encoder_out)  # (bs, vidlen, attention_dim*4)
-        
+        if self.use_hubert_units:
+            encoder_out = encoder_out.reshape(*encoder_out.shape[:-2], -1, self.attention_dim*2)
+            unit_info = self.unit_predictor(encoder_out, **unit_target)
+            encoder_out = unit_info['output']
         # (bs, vidlen, attention_dim*4) -> (bs, mellen=4*vidlen, attention_dim)
         encoder_out = encoder_out.reshape(*encoder_out.shape[:-2], -1, self.attention_dim)
         if self.use_prosody:
@@ -153,6 +159,7 @@ class AVHubertEncoder(nn.Module):
         return {"visual_feature":feature,  # feature is still (bs, vidlen, 768)
                 "melspec_out":melspec_out_chunked,  # (bs, mellen, 80)
                 "prosody": prosody_info if self.use_prosody else None,
+                "unit": unit_info if self.use_hubert_units else None,
                 "output": encoder_out,  # (bs, mellen, attention_dim)
                 }  
 

@@ -129,3 +129,43 @@ class ProsodyPredictor(nn.Module):
             "energy_class": energy_target_embedding_idx,
             "mel_mask":mel_mask,
         }
+        
+class HuBERTPredictor(nn.Module):
+    """Implemented from Variance Adaptor in FastSpeech 2
+    For reference, see
+    https://github.com/ming024/FastSpeech2/blob/d4e79eb52e8b01d24703b2dfc0385544092958f3/model/modules.py#L17C19-L17C19
+    """
+    # TODO: check pitch/energy min/max for LRS3
+    def __init__(self, k=1000, encoder_hidden=512,):
+        super().__init__()
+        self.hubert_predictor = Predictor(in_dim=encoder_hidden, out_dim=k)
+        self.kmeans_embeddings = nn.Embedding(k, encoder_hidden)
+            
+    def get_embedding(self, x, target_embedding_idx, mask):
+        prediction = self.hubert_predictor(x, mask)
+        if target_embedding_idx is not None:
+            embedding = self.kmeans_embeddings(target_embedding_idx)
+        else:
+            if self.embedding_method == self.CLASSIFICATION:
+                embedding_idx = prediction.max(dim=-1).indices
+            embedding = self.kmeans_embeddings(
+                embedding_idx
+            )
+        return prediction, embedding
+    
+    def forward(
+        self,
+        x,
+        kmeans_mask=None,  # masked regions should be filled with false.
+        kmeans_target=None,
+    ):  
+        kmeans_prediction, hubert_embedding = self.get_embedding(
+            x, kmeans_target, kmeans_mask
+        )
+        x = x + hubert_embedding
+
+        return {
+            "output":x,
+            "kmeans_pred":kmeans_prediction,
+            "mel_mask":kmeans_mask,
+        }
