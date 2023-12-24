@@ -46,11 +46,13 @@ def get_dataloader(dataset:AVHubertDataset, batch_size, shuffle, num_workers, di
     
     return loader, sampler
 
-def load_dataset(split: str, cfg:AVHubertPretrainingConfig, pitch_type=None) -> None:
+def load_dataset(split: str, cfg:AVHubertPretrainingConfig, pitch_type=None, km_name=None) -> None:
         manifest = f"{cfg.data}/{split}.tsv"
         paths = [
             f"{cfg.data}/{split}.{l}" for l in cfg.labels
         ]
+        if km_name is not None:
+            km_name = f"{cfg.data}/{km_name}.km"
         image_aug = cfg.image_aug if split == 'train' else False
         # noise_fn, noise_snr = f"{self.cfg.noise_wav}/{split}.tsv" if self.cfg.noise_wav is not None else None, eval(self.cfg.noise_snr)
         # noise_num = self.cfg.noise_num
@@ -66,6 +68,7 @@ def load_dataset(split: str, cfg:AVHubertPretrainingConfig, pitch_type=None) -> 
             min_keep_sample_size=cfg.min_sample_size,  # None
             max_sample_seconds=max_sample_seconds,
             pitch_type=pitch_type,
+            km_path=km_name,
             pad_audio=pad_audio,  # Should be True
             normalize=cfg.normalize,  # True
             store_labels=False,
