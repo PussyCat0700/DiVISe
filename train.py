@@ -250,7 +250,7 @@ def train(rank, a, h, avhubert_config):
                 kmeans_targets = avhubert_source_batch["km"].to(device)
                 kmeans_mask = batch["net_input"]["padding_mask_km"].to(device)
                 unit_target["kmeans_target"] = kmeans_targets
-                unit_target["kmeans_mask"] = kmeans_mask
+                unit_target["kmeans_mask"] = ~kmeans_mask
             generator_out = generator(avhubert_source_batch["video"].to(device), prosody_target, unit_target, ~mel_padding_mask)
             y_g_avhubert_mel = generator_out["melspec_out"]
             if h.prosody_type is not None:
@@ -358,10 +358,10 @@ def train(rank, a, h, avhubert_config):
                         log_training("mel_spec_error_generator", mel_error_generator)
                     log_training("mel_spec_error_avhubert", mel_error_avhubert)
                     if h.prosody_type is not None:
-                        log_training("pitch_regression_mse", pitch_loss)
-                        log_training("energy_regression_mse", energy_loss)
+                        log_training("pitch_loss", pitch_loss)
+                        log_training("energy_loss", energy_loss)
                     if h.unit_name is not None:
-                        log_training("unit_regression_mse", unit_loss)
+                        log_training("unit_loss", unit_loss)
                     log_training("epoch", epoch)
                     log_training("alpha_avhubert", alpha_avhubert)
 
@@ -403,7 +403,7 @@ def train(rank, a, h, avhubert_config):
                     }
                     if h.unit_name is not None:
                         kmeans_mask = batch["net_input"]["padding_mask_km"].to(device)
-                        unit_target["kmeans_mask"] = kmeans_mask
+                        unit_target["kmeans_mask"] = ~kmeans_mask
                     generator_out = generator(avhubert_source_batch["video"].to(device), prosody_target, unit_target, ~mel_padding_mask)
                     y_g_avhubert_mel = generator_out["melspec_out"]
                     if a.train_mode == VIDEO2WAV_MODE:
