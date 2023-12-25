@@ -146,8 +146,7 @@ class HuBERTPredictor(nn.Module):
         if target_embedding_idx is not None:
             embedding = self.kmeans_embeddings(target_embedding_idx)
         else:
-            if self.embedding_method == self.CLASSIFICATION:
-                embedding_idx = prediction.max(dim=-1).indices
+            embedding_idx = prediction.max(dim=-1).indices
             embedding = self.kmeans_embeddings(
                 embedding_idx
             )
