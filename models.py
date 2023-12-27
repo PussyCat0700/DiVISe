@@ -127,19 +127,19 @@ class Generator(torch.nn.Module):
         remove_weight_norm(self.conv_post)
     
 class AVHuBERTGenerator(nn.Module):
-    def __init__(self, hifigenerator_config, avhubert_model_config, prosody_minmax_dict, unit_dict, with_generator:bool) -> None:
+    def __init__(self, hifigenerator_config, avhubert_model_config, prosody_minmax_dict, unit_dict, hu_dict, with_generator:bool) -> None:
         super().__init__()
         # Intuitively I think generating mel-spectrograms after conformer will be better regardless of generator.
         # To load runs done by previous commits, set mel_before_conformer to True.
-        self.frontend_with_encoder = AVHubertEncoder(avhubert_model_config, hifigenerator_config.num_mels, prosody_minmax_dict=prosody_minmax_dict, unit_dict=unit_dict, mel_before_conformer=False)
+        self.frontend_with_encoder = AVHubertEncoder(avhubert_model_config, hifigenerator_config.num_mels, prosody_minmax_dict=prosody_minmax_dict, unit_dict=unit_dict, hu_dict=hu_dict, mel_before_conformer=False)
         self.with_generator = with_generator
         if self.with_generator:
             attention_dim = self.frontend_with_encoder.attention_dim
             self.generator = Generator(hifigenerator_config, attention_dim)
     
-    def forward(self, video, prosody_targets, unit_target, mel_masks=None):
+    def forward(self, video, prosody_targets, unit_target, hu_target, mel_masks=None):
         avhubert_input = {"video": video, "audio": None,}
-        encoder_out = self.frontend_with_encoder(avhubert_input, prosody_targets, unit_target, mel_masks)
+        encoder_out = self.frontend_with_encoder(avhubert_input, prosody_targets, unit_target, hu_target, mel_masks)
         feature_visual = encoder_out["visual_feature"]  # TODO: feed into Generator.
         if self.with_generator:
             wav_generated = self.generator(encoder_out["output"])  # generator takes in tensor shaped (bs, mellen, attention_dim)
@@ -152,6 +152,7 @@ class AVHuBERTGenerator(nn.Module):
                 "melspec_out":mel_generated,  # (bs, mellen, 80)
                 "prosody": encoder_out["prosody"],
                 "unit": encoder_out["unit"],
+                "hu": encoder_out["hu"],
                 }
     
     def load_pretrained_avhubertmodel(self, pretrained_avhubert_path:str, map_location):

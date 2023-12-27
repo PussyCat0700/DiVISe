@@ -156,7 +156,7 @@ class HuBERTPredictor(nn.Module):
         self,
         x,
         kmeans_mask=None,  # masked regions should be filled with false.
-        kmeans_target=None,
+        kmeans_target=None,  # Tensor of shape [B, T]
     ):  
         kmeans_prediction, hubert_embedding = self.get_embedding(
             x, kmeans_target, kmeans_mask
@@ -167,4 +167,50 @@ class HuBERTPredictor(nn.Module):
             "output":x,
             "kmeans_pred":kmeans_prediction,
             "mel_mask":kmeans_mask,
+        }
+
+class HuBERTRepresentationPredictor(nn.Module):
+    def __init__(self, init_p=0.3, stop_p=1.0, current_step=None, total_steps=None, encoder_hidden=512, hubert_hiddden=768) -> None:
+        super().__init__()
+        self.init_p = init_p
+        self.stop_p = stop_p
+        if current_step is not None and total_steps is not None:
+            self.reset_prob(current_step, total_steps) 
+        # Reference except that embedding_dim follows hubert_hidden: 
+        # Lip2Vec: Efficient and Robust Visual Speech Recognition via Latent-to-Latent Visual to Audio Representation Mapping
+        # https://arxiv.org/abs/2308.06112
+        self.pre_proj = nn.Linear(encoder_hidden, hubert_hiddden)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=hubert_hiddden, dim_feedforward=3072, nhead=12, batch_first=True)
+        self.predictor = nn.TransformerEncoder(encoder_layer, num_layers=6)
+        self.post_proj = nn.Linear(hubert_hiddden, encoder_hidden)
+    
+    def reset_prob(self, current_step, total_steps):
+        self.k = (self.stop_p - self.init_p) / total_steps
+        self.prob = self.k * current_step
+        assert 0.0<=self.prob<=1.0, f"got {self.prob}"
+        
+    def forward(self, 
+        x,  # Tensor of shape [B, T, encoder_hidden]
+        src_key_padding_mask=None,  # masked regions should be filled with TRUE.
+        hubert_representation=None,  # Tensor of shape [B, T, hubert_hidden]
+    ):
+        zv = self.pre_proj(x)
+        if hubert_representation is not None:  # and when model is training
+            time_mask = (torch.rand(*x.shape[:-1]) < self.prob).to(x.device)  # True means not used
+            masked_a = torch.where(time_mask.unsqueeze(-1), 0.0, hubert_representation)
+            zin = zv + masked_a
+            self.prob += self.k  # only update prob when training
+        else:
+            zin = zv
+        # [src/tgt/memory]_key_padding_mask provides specified elements in the key to be ignored by the attention.
+        # If a BoolTensor is provided, the positions with the value of True will be ignored while the position with the value of False will be unchanged.
+        # https://pytorch.org/docs/stable/generated/torch.nn.Transformer.html
+        zg_a = self.predictor(zin, src_key_padding_mask=src_key_padding_mask)
+        hubert_repr = self.post_proj(zg_a)
+        x = x + hubert_repr
+        return {
+            "output":x,
+            "generated_rep": zg_a,
+            "time_mask": time_mask,
+            "mask_prob": self.prob,
         }

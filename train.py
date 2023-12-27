@@ -84,11 +84,17 @@ def train(rank, a, h, avhubert_config):
         unit_dict = {
             "k":h.k,
         }
+    hu_dict = None
+    if h.hu_repr_name is not None:
+        hu_dict = {
+            "hubert_hiddden":h.hubert_hidden  # 768 for hubert base
+        }
             
     generator = AVHuBERTGenerator(hifigenerator_config=h,
                                   avhubert_model_config=avhubert_config["model"], 
                                   prosody_minmax_dict=prosody_minmax_dict,
                                   unit_dict=unit_dict,
+                                  hu_dict=hu_dict,
                                   with_generator=a.train_mode==VIDEO2WAV_MODE,
                                   ).to(device)
     mpd = MultiPeriodDiscriminator().to(device)
@@ -155,7 +161,7 @@ def train(rank, a, h, avhubert_config):
     scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=h.lr_decay, last_epoch=last_epoch)
     if a.train_mode == VIDEO2WAV_MODE:
         scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=h.lr_decay, last_epoch=last_epoch)
-    trainset = load_dataset("train", avhubert_config["task"], h.prosody_type, h.unit_name)
+    trainset = load_dataset("train", avhubert_config["task"], h.prosody_type, h.unit_name, h.hu_repr_name)
     train_loader, train_sampler = get_dataloader(trainset, 
                                                 batch_size=a.batch_size,
                                                 num_workers=h.num_gpus, 
@@ -166,7 +172,7 @@ def train(rank, a, h, avhubert_config):
                                                 )
 
     if rank == 0:
-        validset = load_dataset("valid", avhubert_config["task"], h.prosody_type, h.unit_name)
+        validset = load_dataset("valid", avhubert_config["task"], h.prosody_type, h.unit_name, h.hu_repr_name)
         validation_loader, _ = get_dataloader(validset, 
                                             batch_size=a.batch_size,
                                             num_workers=h.num_gpus, 
@@ -182,6 +188,8 @@ def train(rank, a, h, avhubert_config):
     if a.train_mode == VIDEO2MEL_MODE:
         mel2wav_inverter = MelSpectrogramInverter(h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax, device)
         mel2wav_inverter.eval()
+    generator_module = generator.module if h.num_gpus > 1 else generator
+    generator_module.frontend_with_encoder.update_steps(steps, a.training_epochs*len(train_loader))
     bundle = torchaudio.pipelines.WAV2VEC2_ASR_BASE_960H
     for epoch in range(max(0, last_epoch), a.training_epochs):
         train_ratio = epoch / a.training_epochs  # [0, 1-1/a.training_epochs]
@@ -228,6 +236,10 @@ def train(rank, a, h, avhubert_config):
                 "kmeans_target":None,
                 "kmeans_mask":None,
             }
+            hu_target = {
+                "hubert_representation":None,
+                "src_key_padding_mask":None,
+            }
             def normalize_prosody(x, m=1e-8):
                 return (x - x.mean(dim=-1, keepdim=True))/(m+x.std(dim=-1, keepdim=True))
             if h.prosody_type is not None:
@@ -246,12 +258,16 @@ def train(rank, a, h, avhubert_config):
                     # keys are param names of forward func of ProsodyPredictor
                     prosody_target["energy_target"] = energy_targets
                     prosody_target["pitch_target"] = pitch_targets
-            if h.unit_name is not None:
-                kmeans_targets = avhubert_source_batch["km"].to(device)
+            if h.unit_name is not None or h.hu_repr_name is not None:
                 kmeans_mask = batch["net_input"]["padding_mask_km"].to(device)
-                unit_target["kmeans_target"] = kmeans_targets
-                unit_target["kmeans_mask"] = ~kmeans_mask
-            generator_out = generator(avhubert_source_batch["video"].to(device), prosody_target, unit_target, ~mel_padding_mask)
+                if h.unit_name is not None:
+                    unit_target["kmeans_target"] = avhubert_source_batch["km"].to(device)
+                    unit_target["kmeans_mask"] = ~kmeans_mask
+                if h.hu_repr_name is not None:
+                    hu_target["hubert_representation"] = avhubert_source_batch["hu"].to(device)
+                    hu_target["src_key_padding_mask"] = kmeans_mask
+
+            generator_out = generator(avhubert_source_batch["video"].to(device), prosody_target, unit_target, hu_target, ~mel_padding_mask)
             y_g_avhubert_mel = generator_out["melspec_out"]
             if h.prosody_type is not None:
                 pitch_predictions = generator_out["prosody"]["pitch_pred"]
@@ -281,6 +297,18 @@ def train(rank, a, h, avhubert_config):
                 kmeans_targets = kmeans_targets.masked_select(~kmeans_mask)
                 unit_loss = F.cross_entropy(unit_predictions, kmeans_targets)
                 unit_loss = h.unit_scale*unit_loss
+            if h.hu_repr_name is not None:
+                rep_predictions = generator_out["hu"]["generated_rep"]
+                rep_mask_prob = generator_out["hu"]["mask_prob"]
+                rep_targets = hu_target["hubert_representation"]
+                C = rep_predictions.shape[-1]
+                rep_predictions = rep_predictions.masked_select((~kmeans_mask).unsqueeze(-1)).reshape(-1, C)
+                rep_targets = rep_targets.masked_select((~kmeans_mask).unsqueeze(-1)).reshape(-1, C)
+                # This is a bit different from https://arxiv.org/abs/2308.06112
+                # As we're optimizing not just a single loss term, we will need numerical stability
+                rep_loss = torch.sum(1-torch.nn.functional.cosine_similarity(rep_targets, rep_predictions, dim=1))
+                rep_loss = h.hu_scale*rep_loss
+                
             if a.train_mode == VIDEO2WAV_MODE:
                 y_g_hat = generator_out["wav_generated"]
                 y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size,
@@ -332,6 +360,8 @@ def train(rank, a, h, avhubert_config):
                 loss_gen_all += prosody_loss
             if h.unit_name is not None:
                 loss_gen_all += unit_loss
+            if h.hu_repr_name is not None:
+                loss_gen_all += rep_loss
             loss_gen_all.backward()
             optim_g.step()
 
@@ -362,6 +392,9 @@ def train(rank, a, h, avhubert_config):
                         log_training("energy_loss", energy_loss)
                     if h.unit_name is not None:
                         log_training("unit_loss", unit_loss)
+                    if h.hu_repr_name is not None:
+                        log_training("hu_cosine_loss", rep_loss)
+                        log_training("hu_mask_prob", rep_mask_prob)
                     log_training("epoch", epoch)
                     log_training("alpha_avhubert", alpha_avhubert)
 
@@ -401,10 +434,16 @@ def train(rank, a, h, avhubert_config):
                         "kmeans_target":None,
                         "kmeans_mask":None,
                     }
+                    hu_target = {
+                        "hubert_representation":None,
+                        "src_key_padding_mask":None,
+                    }
                     if h.unit_name is not None:
                         kmeans_mask = batch["net_input"]["padding_mask_km"].to(device)
                         unit_target["kmeans_mask"] = ~kmeans_mask
-                    generator_out = generator(avhubert_source_batch["video"].to(device), prosody_target, unit_target, ~mel_padding_mask)
+                    if h.hu_repr_name is not None:
+                        hu_target = batch["net_input"]["padding_mask_km"].to(device)
+                    generator_out = generator(avhubert_source_batch["video"].to(device), prosody_target, unit_target, hu_target, ~mel_padding_mask)
                     y_g_avhubert_mel = generator_out["melspec_out"]
                     if a.train_mode == VIDEO2WAV_MODE:
                         y_g_hat = generator_out["wav_generated"].detach()
@@ -537,6 +576,8 @@ def main():
         json_config['prosody_type'] = None
     if 'unit_name' not in json_config:
         json_config['unit_name'] = None
+    if 'hu_repr_name' not in json_config:
+        json_config['hu_repr_name'] = None
     h = AttrDict(json_config)
     if h.prosody_type is not None:
         assert h.norm_mode in ['original', 'meanvar'], f"{h.norm_mode=} which is not a valid way to normalize prosody."

@@ -14,6 +14,7 @@ if __name__ == '__main__':
     parser.add_argument("--hifigan_config", default="conf/hifigan/video2speech_template.json", help='config parts on dataset loading will not take effect in this script')
     parser.add_argument("--pitch_type")
     parser.add_argument("--km")
+    parser.add_argument("--hu_name")
     args = parser.parse_args()
     avhubert_config = load_avhubert_config(args.avhubert_config)
     with open(args.hifigan_config) as f:
@@ -23,7 +24,7 @@ if __name__ == '__main__':
     sets = {}
     for split in ["train", "valid"]:
         sets[split] = {}
-        sets[split]["dataset"] = load_dataset(split, avhubert_config["task"], pitch_type=args.pitch_type, km_name=args.km)
+        sets[split]["dataset"] = load_dataset(split, avhubert_config["task"], pitch_type=args.pitch_type, km_name=args.km, hu_name=args.hu_name)
         sets[split]["dataloader"], sets[split]["sampler"] = get_dataloader(sets[split]["dataset"], 
             batch_size=8,
             num_workers=0, 
@@ -43,4 +44,6 @@ if __name__ == '__main__':
                 assert src["pitch"].shape[-1] == y_mel.shape[-1], f'{y_mel.shape[-1]=} but {src["pitch"].shape[-1]=}'
             if src["km"] is not None:
                 assert src["km"].shape[-1] == src["video"].shape[2] * 2, f'{src["video"].shape[2]=} but {src["km"].shape[-1]=}'
+            if src["hu"] is not None:
+                assert src["hu"].shape[1] == src["video"].shape[2] * 2, f'{src["video"].shape[2]=} but {src["hu"].shape[1]=}'
     logging.info("check successful")
