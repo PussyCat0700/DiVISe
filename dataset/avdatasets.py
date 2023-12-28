@@ -92,6 +92,7 @@ class AVHubertDataset(FairseqDataset):
             pitch_type: Optional[str] = None,  # Should be pyworld or kaldi
             km_path: Optional[str] = None,  # Should be path to your .km file
             hu_name: Optional[str] = None,  # Should be {kmeans_split} in hubertrep_export.py 
+            fake_km_mask: bool = False,  # provide km padding mask even on a set without km labels.
             shuffle: bool = True,
             pad_audio: bool = False,
             normalize: bool = False,
@@ -133,6 +134,7 @@ class AVHubertDataset(FairseqDataset):
         self.normalize = normalize
         self.pitch_type = pitch_type
         self.hu_name = hu_name
+        self.fake_km_mask = fake_km_mask
         if km_path:
             # km_label is stored in a single text-format file so it must be preloaded into running memory.
             with open(km_path, 'r') as f:
@@ -369,7 +371,14 @@ class AVHubertDataset(FairseqDataset):
                 if with_km:
                     collated_km, padding_mask_km, km_starts = self.collater_wav(km_source, km_size, km_starts)
                 if with_hu:
-                    collated_hu, padding_mask_km, km_starts = self.collater_wav(hu_source, km_size, km_starts)                
+                    collated_hu, padding_mask_km, km_starts = self.collater_wav(hu_source, km_size, km_starts)
+            elif self.fake_km_mask:
+                # for sets without labels, make padding mask available
+                km_sizes = [video_size*2 for video_size in video_sizes]
+                fake_km_source = [torch.zeros(t) for t in km_sizes]
+                km_size = func(km_sizes, self.max_km_sample_size)
+                km_starts = [int(second_start*self.sr_km) for second_start in second_starts]
+                _, padding_mask_km, km_starts = self.collater_wav(fake_km_source, km_size, km_starts)
         else:
             collated_audios, audio_starts = None, None
         if video_source is not None:

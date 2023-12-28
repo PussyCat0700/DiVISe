@@ -46,7 +46,7 @@ def get_dataloader(dataset:AVHubertDataset, batch_size, shuffle, num_workers, di
     
     return loader, sampler
 
-def load_dataset(split: str, cfg:AVHubertPretrainingConfig, pitch_type=None, km_name=None, hu_name=None) -> None:
+def load_dataset(split: str, cfg:AVHubertPretrainingConfig, pitch_type=None, km_name=None, hu_name=None, fake_km_mask=False) -> None:
         manifest = f"{cfg.data}/{split}.tsv"
         paths = [
             f"{cfg.data}/{split}.{l}" for l in cfg.labels
@@ -70,6 +70,7 @@ def load_dataset(split: str, cfg:AVHubertPretrainingConfig, pitch_type=None, km_
             pitch_type=pitch_type,
             km_path=km_name,
             hu_name=hu_name,
+            fake_km_mask=fake_km_mask,
             pad_audio=pad_audio,  # Should be True
             normalize=cfg.normalize,  # True
             store_labels=False,

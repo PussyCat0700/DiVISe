@@ -31,6 +31,10 @@ if __name__ == '__main__':
                 "km_name":args.km,
                 "hu_name":args.hu_name
             })
+        else:
+            kwargs.update({
+                "fake_km_mask":True
+            })
         sets[split]["dataset"] = load_dataset(split, avhubert_config["task"], **kwargs)
         sets[split]["dataloader"], sets[split]["sampler"] = get_dataloader(sets[split]["dataset"], 
             batch_size=8,

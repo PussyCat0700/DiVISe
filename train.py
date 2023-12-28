@@ -172,7 +172,7 @@ def train(rank, a, h, avhubert_config):
                                                 )
 
     if rank == 0:
-        validset = load_dataset("valid", avhubert_config["task"])
+        validset = load_dataset("valid", avhubert_config["task"], fake_km_mask=True)
         validation_loader, _ = get_dataloader(validset, 
                                             batch_size=a.batch_size,
                                             num_workers=h.num_gpus, 
