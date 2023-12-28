@@ -195,6 +195,7 @@ class HuBERTRepresentationPredictor(nn.Module):
         hubert_representation=None,  # Tensor of shape [B, T, hubert_hidden]
     ):
         zv = self.pre_proj(x)
+        time_mask = None
         if hubert_representation is not None:  # and when model is training
             time_mask = (torch.rand(*x.shape[:-1]) < self.prob).to(x.device)  # True means not used
             masked_a = torch.where(time_mask.unsqueeze(-1), 0.0, hubert_representation)

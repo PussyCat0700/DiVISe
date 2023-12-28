@@ -22,9 +22,16 @@ if __name__ == '__main__':
     json_config = json.loads(data)
     h = AttrDict(json_config)
     sets = {}
-    for split in ["train", "valid"]:
+    for split in ["valid", "train"]:
         sets[split] = {}
-        sets[split]["dataset"] = load_dataset(split, avhubert_config["task"], pitch_type=args.pitch_type, km_name=args.km, hu_name=args.hu_name)
+        kwargs = {}
+        if "train" == split:
+            kwargs.update({
+                "pitch_type":args.pitch_type,
+                "km_name":args.km,
+                "hu_name":args.hu_name
+            })
+        sets[split]["dataset"] = load_dataset(split, avhubert_config["task"], **kwargs)
         sets[split]["dataloader"], sets[split]["sampler"] = get_dataloader(sets[split]["dataset"], 
             batch_size=8,
             num_workers=0, 

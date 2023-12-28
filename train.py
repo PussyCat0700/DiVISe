@@ -172,7 +172,7 @@ def train(rank, a, h, avhubert_config):
                                                 )
 
     if rank == 0:
-        validset = load_dataset("valid", avhubert_config["task"], h.prosody_type, h.unit_name, h.hu_repr_name)
+        validset = load_dataset("valid", avhubert_config["task"])
         validation_loader, _ = get_dataloader(validset, 
                                             batch_size=a.batch_size,
                                             num_workers=h.num_gpus, 
@@ -438,11 +438,14 @@ def train(rank, a, h, avhubert_config):
                         "hubert_representation":None,
                         "src_key_padding_mask":None,
                     }
-                    if h.unit_name is not None:
-                        kmeans_mask = batch["net_input"]["padding_mask_km"].to(device)
-                        unit_target["kmeans_mask"] = ~kmeans_mask
-                    if h.hu_repr_name is not None:
-                        hu_target = batch["net_input"]["padding_mask_km"].to(device)
+                    if h.unit_name is not None or h.hu_repr_name is not None:
+                        kmeans_mask = batch["net_input"]["padding_mask_km"]
+                        if kmeans_mask is not None:
+                            kmeans_mask = kmeans_mask.to(device)
+                            if h.unit_name is not None:
+                                unit_target["kmeans_mask"] = ~kmeans_mask
+                            if h.hu_repr_name is not None:
+                                hu_target["src_key_padding_mask"] = kmeans_mask
                     generator_out = generator(avhubert_source_batch["video"].to(device), prosody_target, unit_target, hu_target, ~mel_padding_mask)
                     y_g_avhubert_mel = generator_out["melspec_out"]
                     if a.train_mode == VIDEO2WAV_MODE:

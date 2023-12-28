@@ -137,6 +137,8 @@ class AVHubertDataset(FairseqDataset):
             # km_label is stored in a single text-format file so it must be preloaded into running memory.
             with open(km_path, 'r') as f:
                 self.km_labels = f.readlines()
+            assert len(self.km_labels) == len(self.names), f"{len(self.km_labels)=} does not match lines in tsv files." \
+                "Please check if they are on the same split."
         else:
             self.km_labels = None
         if image_aug:
@@ -212,7 +214,8 @@ class AVHubertDataset(FairseqDataset):
         else:
             km_labels = None
         if self.hu_name is not None:
-            hubert_hu = np.load(os.path.join(audio_base_dir, f"{audio_id}_{self.hu_name}.npy"))
+            load_path = os.path.join(audio_base_dir, f"{audio_id}_{self.hu_name}.npy")
+            hubert_hu = np.load(load_path)
         else:
             hubert_hu = None
         if 'video' in self.modalities:
@@ -350,6 +353,8 @@ class AVHubertDataset(FairseqDataset):
             func = lambda curr_x, max_sample_x: min(min(curr_x), max_sample_x)
         collated_pitches = None
         collated_km = None
+        collated_hu = None
+        padding_mask_km = None
         if audio_source is not None:
             audio_size = func(audio_sizes, self.max_audio_sample_size)
             collated_audios, padding_mask, audio_starts = self.collater_wav(audio_source, audio_size)
@@ -364,9 +369,7 @@ class AVHubertDataset(FairseqDataset):
                 if with_km:
                     collated_km, padding_mask_km, km_starts = self.collater_wav(km_source, km_size, km_starts)
                 if with_hu:
-                    collated_hu, padding_mask_km, km_starts = self.collater_wav(hu_source, km_size, km_starts)
-            else:
-                padding_mask_km = None
+                    collated_hu, padding_mask_km, km_starts = self.collater_wav(hu_source, km_size, km_starts)                
         else:
             collated_audios, audio_starts = None, None
         if video_source is not None:
@@ -381,10 +384,10 @@ class AVHubertDataset(FairseqDataset):
         ]
         targets_list, lengths_list, ntokens_list = self.collater_label_text(targets_by_label)
         source = {"audio": collated_audios, "video": collated_videos, "pitch": collated_pitches, "km": collated_km, "hu": collated_hu,}
-        net_input = {"source": source, 
-                    "padding_mask_wav": padding_mask, 
-                    "padding_mask_mel": padding_mask_mel,
-                    "padding_mask_km": padding_mask_km,
+        net_input = {"source": source,  # Definitely not None
+                    "padding_mask_wav": padding_mask,  # Definitely not None
+                    "padding_mask_mel": padding_mask_mel,  # Definitely not None
+                    "padding_mask_km": padding_mask_km,  # Could be None (e.g. in validation)
                     }  # padding_mask_wav is for waveform(16000Hz), _mel for mel spectrogram(100Hz), _km 50Hz
         batch = {
             "id": torch.LongTensor([s["id"] for s in samples]),
