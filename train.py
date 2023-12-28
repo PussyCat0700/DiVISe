@@ -292,6 +292,7 @@ def train(rank, a, h, avhubert_config):
                 prosody_loss = pitch_loss+energy_loss
             if h.unit_name is not None:
                 unit_predictions = generator_out["unit"]["kmeans_pred"]
+                kmeans_targets = unit_target["kmeans_target"]
                 C = unit_predictions.shape[-1]
                 unit_predictions = unit_predictions.masked_select((~kmeans_mask).unsqueeze(-1)).reshape(-1, C)
                 kmeans_targets = kmeans_targets.masked_select(~kmeans_mask)

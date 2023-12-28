@@ -186,7 +186,7 @@ class HuBERTRepresentationPredictor(nn.Module):
     
     def reset_prob(self, current_step, total_steps):
         self.k = (self.stop_p - self.init_p) / total_steps
-        self.prob = self.k * current_step
+        self.prob = self.k * current_step + self.init_p
         assert 0.0<=self.prob<=1.0, f"got {self.prob}"
         
     def forward(self, 
