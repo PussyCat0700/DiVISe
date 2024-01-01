@@ -114,6 +114,15 @@ def train(rank, a, h, avhubert_config):
     steps = 0
     if a.avhubert_ckpt is not None:
         generator.load_pretrained_avhubertmodel(a.avhubert_ckpt, map_location=device)
+    if a.hifigan_ckpt is not None:
+        hifigan_weight = torch.load(a.hifigan_ckpt, map_location=device)
+        def unwrap_module_generator(weight):
+            return {'.'.join(k.split('.')[1:]):v for k,v in weight.items() if 'conv_pre' not in k}
+        def unwrap_module_discriminator(weight, name):
+            return {'.'.join(k.split('.')[2:]):v for k,v in weight.items() if name in k}
+        generator.generator.load_state_dict(unwrap_module_generator(hifigan_weight["generator"]["model"]), strict=False)  # conv_pre will be ignored
+        mpd.load_state_dict(unwrap_module_discriminator(hifigan_weight["discriminator"]["model"], "mpd"))
+        msd.load_state_dict(unwrap_module_discriminator(hifigan_weight["discriminator"]["model"], "msd"))
     # TODO: It is really unreasonable to keep all training states in state_dict_do, and it is still here just for compatibility.
     if a.train_mode == VIDEO2WAV_MODE:
         if cp_g is None or cp_do is None:
@@ -461,7 +470,7 @@ def train(rank, a, h, avhubert_config):
                     with torch.inference_mode():
                         lengths = (~wav_padding_mask).sum(dim=-1)  # (batch_size,)
                         # model definition can be found in https://pytorch.org/audio/stable/_modules/torchaudio/models/wav2vec2/model.html
-                        emissions, lengths = transcriber(y_g_hat, lengths)  # length indicates the valid length in time axis of emissions
+                        emissions, lengths = transcriber(y_g_hat.squeeze(), lengths)  # length indicates the valid length in time axis of emissions
                         for emission, gt_text, length in zip(emissions, gt_texts, lengths):
                             generated_text = valid_greedy_decoder(emission, length)
                             edit_dis = editdistance.eval(generated_text, gt_text)
@@ -556,6 +565,7 @@ def main():
     parser.add_argument('--hifigan_config', default='conf/hifigan/video2speech_template.json')  # TODO: Change back in formal release
     parser.add_argument('--avhubert_config', default='conf/avhubert/base_avhubert.yaml')
     parser.add_argument('--avhubert_ckpt', help='if specified, will load pretrained weight onto AVHuBERTModel')
+    parser.add_argument('--hifigan_ckpt', help='if specified, will load pretrained weight onto HiFi-GAN')
     parser.add_argument('--training_epochs', default=30, type=int)
     parser.add_argument('--stdout_interval', default=5, type=int)
     parser.add_argument('--summary_interval', default=100, type=int)
