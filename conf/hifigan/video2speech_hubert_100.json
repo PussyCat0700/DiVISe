@@ -27,6 +27,7 @@
     "fmax_for_loss": null,
 
     "unit_name":"cluster_label_100",
+    "valid_unit_name":"valid_cluster_label",
     "k":100,
     "unit_scale": 1.0,
 

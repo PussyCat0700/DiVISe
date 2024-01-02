@@ -6,6 +6,7 @@ import warnings
 import numpy as np
 from omegaconf import OmegaConf
 import torchaudio
+import torchmetrics
 from tqdm import tqdm
 
 from dataset import load_avhubert_config, load_dataset, get_dataloader
@@ -181,7 +182,17 @@ def train(rank, a, h, avhubert_config):
                                                 )
 
     if rank == 0:
-        validset = load_dataset("valid", avhubert_config["task"], fake_km_mask=True)
+        kwargs = {}
+        if h.valid_unit_name is not None:
+            # You can apply trained kmeans model on valid set to get km labels just for reference.
+            kwargs.update({
+                "km_name":h.valid_unit_name,
+                })
+        else:
+            kwargs.update({
+                "fake_km_mask":True,
+            })
+        validset = load_dataset("valid", avhubert_config["task"], **kwargs)
         validation_loader, _ = get_dataloader(validset, 
                                             batch_size=a.batch_size,
                                             num_workers=h.num_gpus, 
@@ -426,6 +437,18 @@ def train(rank, a, h, avhubert_config):
                 transcriber = bundle.get_model().to(device)
                 valid_greedy_decoder = GreedyCTCDecoder(labels=bundle.get_labels())
                 pbar2 = tqdm(validation_loader, desc="Validation in progress...")
+                if h.unit_name is not None:
+                    num_classes, task, average = h.k, "multiclass", "macro"
+                    valid_acc = torchmetrics.Accuracy(task=task, num_classes=num_classes, average=average).to(device)
+                    valid_recall = torchmetrics.Recall(task=task, num_classes=num_classes, average=average).to(device)
+                    valid_precision = torchmetrics.Precision(task=task, num_classes=num_classes, average=average).to(device)
+                    valid_auc = torchmetrics.AUROC(task=task, num_classes=num_classes, average=average).to(device)
+                    val_err_tot.update({
+                        "acc_hu_class":0,
+                        "recall_hu_class":0,
+                        "precision_hu_class":0,
+                        "auc_hu_class":0,
+                    })
                 for j, batch in enumerate(pbar2):
                     avhubert_source_batch = batch["net_input"]["source"]
                     y = avhubert_source_batch["audio"].to(device)
@@ -466,6 +489,18 @@ def train(rank, a, h, avhubert_config):
                         val_err_tot["mel_spec_error_generator"] += F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_hat_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
                     elif a.train_mode == VIDEO2MEL_MODE:
                         y_g_hat = mel2wav_inverter(y_g_avhubert_mel.detach().transpose(-1, -2))
+                    if h.unit_name is not None and avhubert_source_batch["km"] is not None:
+                        preds_km = generator_out["unit"]["kmeans_pred"]
+                        preds_km = preds_km.transpose(2, 1)
+                        targets_km = avhubert_source_batch["km"].to(device)
+                        acc = valid_acc(preds_km, targets_km).item()
+                        recall = valid_recall(preds_km, targets_km).item()
+                        precision = valid_precision(preds_km, targets_km).item()
+                        auc = valid_auc(preds_km, targets_km).item()
+                        val_err_tot["acc_hu_class"]+=acc
+                        val_err_tot["recall_hu_class"] += recall
+                        val_err_tot["precision_hu_class"] += precision
+                        val_err_tot["auc_hu_class"] += auc
                     n_batch = len(gt_texts)
                     with torch.inference_mode():
                         lengths = (~wav_padding_mask).sum(dim=-1)  # (batch_size,)
@@ -563,7 +598,7 @@ def main():
     default_ckpt_dir = 'cp_hifigan'
     parser.add_argument('--checkpoint_path', default=default_ckpt_dir)
     parser.add_argument('--hifigan_config', default='conf/hifigan/video2speech_template.json')  # TODO: Change back in formal release
-    parser.add_argument('--avhubert_config', default='conf/avhubert/base_avhubert.yaml')
+    parser.add_argument('--avhubert_config', default='conf/avhubert/base_avhubert_30h.yaml')
     parser.add_argument('--avhubert_ckpt', help='if specified, will load pretrained weight onto AVHuBERTModel')
     parser.add_argument('--hifigan_ckpt', help='if specified, will load pretrained weight onto HiFi-GAN')
     parser.add_argument('--training_epochs', default=30, type=int)
