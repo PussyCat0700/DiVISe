@@ -42,6 +42,8 @@ logging.getLogger(__name__)
 
 VIDEO2MEL_MODE = "v2m"
 VIDEO2WAV_MODE = "v2w"
+UNIT_SOFT = "soft"
+UNIT_HARD = "hard"
 
 def initialize_val_terms(train_mode):
     val_err_tot = {
@@ -84,7 +86,12 @@ def train(rank, a, h, avhubert_config):
     if h.unit_name is not None:
         unit_dict = {
             "k":h.k,
+            "is_soft":h.unit_method == UNIT_SOFT,  # This term will be poped to AVHuBERTEncoder only
         }
+        if h.unit_method == UNIT_SOFT:
+            unit_dict.update({
+                "hubert_hiddden":h.hubert_hidden,
+            })
     hu_dict = None
     if h.hu_repr_name is not None:
         hu_dict = {
@@ -311,12 +318,25 @@ def train(rank, a, h, avhubert_config):
                     energy_loss = h.energy_scale*energy_loss
                 prosody_loss = pitch_loss+energy_loss
             if h.unit_name is not None:
-                unit_predictions = generator_out["unit"]["kmeans_pred"]
-                kmeans_targets = unit_target["kmeans_target"]
-                C = unit_predictions.shape[-1]
-                unit_predictions = unit_predictions.masked_select((~kmeans_mask).unsqueeze(-1)).reshape(-1, C)
-                kmeans_targets = kmeans_targets.masked_select(~kmeans_mask)
-                unit_loss = F.cross_entropy(unit_predictions, kmeans_targets)
+                kmeans_targets = unit_target["kmeans_target"]         
+                if h.unit_method == UNIT_HARD:
+                    unit_predictions = generator_out["unit"]["kmeans_pred"]
+                    C = unit_predictions.shape[-1]
+                    unit_predictions = unit_predictions.masked_select((~kmeans_mask).unsqueeze(-1)).reshape(-1, C)
+                    kmeans_targets = kmeans_targets.masked_select(~kmeans_mask)
+                    unit_loss = F.cross_entropy(unit_predictions, kmeans_targets)
+                elif h.unit_method == UNIT_SOFT:
+                    embedding_predictions = generator_out["unit"]["generated_softunit"]  # [B, T, hubert_hidden]
+                    embedding_targets = generator_out["unit"]["all_embedding"]  # [k, hubert_hidden]
+                    C = embedding_targets.shape[0]
+                    embedding_predictions = embedding_predictions.unsqueeze(0)  # [1, B, T, hubert_hidden]
+                    embedding_targets = embedding_targets.unsqueeze(1).unsqueeze(1)  # [k, 1, 1, hubert_hidden]
+                    sim_matrix = F.cosine_similarity(embedding_predictions, embedding_targets, dim=-1).softmax(dim=0)  # [k, B, T]
+                    sim_matrix = sim_matrix.permute(1, 2, 0)  # [B, T, k]
+                    sim_probs = sim_matrix.masked_select((~kmeans_mask).unsqueeze(-1)).reshape(-1, C)
+                    kmeans_targets = kmeans_targets.masked_select(~kmeans_mask)
+                    unit_loss = F.cross_entropy(sim_probs, kmeans_targets)
+                    
                 unit_loss = h.unit_scale*unit_loss
             if h.hu_repr_name is not None:
                 rep_predictions = generator_out["hu"]["generated_rep"]
@@ -490,17 +510,27 @@ def train(rank, a, h, avhubert_config):
                     elif a.train_mode == VIDEO2MEL_MODE:
                         y_g_hat = mel2wav_inverter(y_g_avhubert_mel.detach().transpose(-1, -2))
                     if h.unit_name is not None and avhubert_source_batch["km"] is not None:
-                        preds_km = generator_out["unit"]["kmeans_pred"]
-                        preds_km = preds_km.transpose(2, 1)
-                        targets_km = avhubert_source_batch["km"].to(device)
-                        acc = valid_acc(preds_km, targets_km).item()
-                        recall = valid_recall(preds_km, targets_km).item()
-                        precision = valid_precision(preds_km, targets_km).item()
-                        auc = valid_auc(preds_km, targets_km).item()
-                        val_err_tot["acc_hu_class"]+=acc
-                        val_err_tot["recall_hu_class"] += recall
-                        val_err_tot["precision_hu_class"] += precision
-                        val_err_tot["auc_hu_class"] += auc
+                        with torch.inference_mode():
+                            if h.unit_method == UNIT_HARD:
+                                preds_km = generator_out["unit"]["kmeans_pred"]
+                                preds_km = preds_km.transpose(2, 1)  # (B, C, T)
+                            elif h.unit_method == UNIT_SOFT:
+                                embedding_predictions = generator_out["unit"]["generated_softunit"]  # [B, T, hubert_hidden]
+                                embedding_targets = generator_out["unit"]["all_embedding"]  # [k, hubert_hidden]
+                                C = embedding_targets.shape[0]
+                                embedding_predictions = embedding_predictions.unsqueeze(0)  # [1, B, T, hubert_hidden]
+                                embedding_targets = embedding_targets.unsqueeze(1).unsqueeze(1)  # [k, 1, 1, hubert_hidden]
+                                sim_matrix = F.cosine_similarity(embedding_predictions, embedding_targets, dim=-1).softmax(dim=0)  # [k, B, T]
+                                preds_km = sim_matrix.permute(1, 0, 2)  # [B, k, T]
+                            targets_km = avhubert_source_batch["km"].to(device)
+                            acc = valid_acc(preds_km, targets_km).item()
+                            recall = valid_recall(preds_km, targets_km).item()
+                            precision = valid_precision(preds_km, targets_km).item()
+                            auc = valid_auc(preds_km, targets_km).item()
+                            val_err_tot["acc_hu_class"]+=acc
+                            val_err_tot["recall_hu_class"] += recall
+                            val_err_tot["precision_hu_class"] += precision
+                            val_err_tot["auc_hu_class"] += auc
                     n_batch = len(gt_texts)
                     with torch.inference_mode():
                         lengths = (~wav_padding_mask).sum(dim=-1)  # (batch_size,)

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from fairseq.dataclass.configs import FairseqDataclass
 from typing import Dict, List, Optional, Tuple
 from omegaconf import MISSING, II
-from prosody_predictor.predictor import HuBERTPredictor, HuBERTRepresentationPredictor, ProsodyPredictor
+from prosody_predictor.predictor import HuBERTPredictor, HuBERTRepresentationPredictor, HuBERTSoftContentPredictor, ProsodyPredictor
 
 from pytorch_backend.transformer.encoder import ConformerEncoder
 
@@ -132,7 +132,11 @@ class AVHubertEncoder(nn.Module):
         if self.use_prosody:
             self.prosody_predictor = ProsodyPredictor(encoder_hidden=self.attention_dim, **prosody_minmax_dict)
         if self.use_hubert_units:
-            self.unit_predictor = HuBERTPredictor(**unit_dict)
+            self.is_soft = unit_dict.pop("is_soft")
+            if self.is_soft:
+                self.unit_predictor = HuBERTSoftContentPredictor(**unit_dict)
+            else:
+                self.unit_predictor = HuBERTPredictor(**unit_dict)
         if self.use_hubert_representation:
             self.hu_predictor = HuBERTRepresentationPredictor(**hu_dict)
         self.conformer_encoder = ConformerEncoder(size)

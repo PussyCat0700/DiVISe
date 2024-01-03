@@ -28,7 +28,8 @@
 
     "unit_name":"cluster_label",
     "valid_unit_name":"valid_cluster_label",
-    "unit_method":"hard",
+    "unit_method":"soft",
+    "hubert_hidden":768,
     "k":2000,
     "unit_scale": 1.0,
 
@@ -37,7 +38,7 @@
 
     "dist_config": {
         "dist_backend": "nccl",
-        "dist_url": "tcp://localhost:55001",
+        "dist_url": "tcp://localhost:55004",
         "world_size": 1
     }
 }

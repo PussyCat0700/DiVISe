@@ -215,3 +215,29 @@ class HuBERTRepresentationPredictor(nn.Module):
             "time_mask": time_mask,
             "mask_prob": self.prob,
         }
+        
+class HuBERTSoftContentPredictor(nn.Module):
+    def __init__(self, k, encoder_hidden=512, hubert_hiddden=768) -> None:
+        super().__init__()
+        self.pre_proj = nn.Linear(encoder_hidden, hubert_hiddden)
+        self.embedding = nn.Embedding(k, hubert_hiddden)
+        self.post_proj = nn.Linear(hubert_hiddden, encoder_hidden)
+        
+    def forward(
+        self,
+        x,  # Tensor of shape [B, T, encoder_hidden]
+        kmeans_mask=None,  # [Not Used]masked regions should be filled with false.
+        kmeans_target=None,  # Tensor of shape [B, T]
+    ):
+        soft_units = self.pre_proj(x)
+        if kmeans_target is not None:
+            tgt_embedding = self.embedding(kmeans_target)
+            res_term = self.post_proj(tgt_embedding)
+        else:
+            res_term = self.post_proj(soft_units)
+        x = x + res_term
+        return {
+            "output":x,
+            "generated_softunit": soft_units,
+            "all_embedding": self.embedding.weight.detach(),  # No gradient will flow back to this term after return
+        }
