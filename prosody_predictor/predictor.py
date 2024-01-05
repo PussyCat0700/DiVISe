@@ -220,6 +220,8 @@ class HuBERTSoftContentPredictor(nn.Module):
     def __init__(self, k, encoder_hidden=512, hubert_hiddden=768) -> None:
         super().__init__()
         self.pre_proj = nn.Linear(encoder_hidden, hubert_hiddden)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=hubert_hiddden, dim_feedforward=3072, nhead=12, batch_first=True)
+        self.predictor = nn.TransformerEncoder(encoder_layer, num_layers=6)
         self.embedding = nn.Embedding(k, hubert_hiddden)
         self.post_proj = nn.Linear(hubert_hiddden, encoder_hidden)
         
@@ -230,6 +232,7 @@ class HuBERTSoftContentPredictor(nn.Module):
         kmeans_target=None,  # Tensor of shape [B, T]
     ):
         soft_units = self.pre_proj(x)
+        soft_units = self.predictor(soft_units, src_key_padding_mask=~kmeans_mask)
         if kmeans_target is not None:
             tgt_embedding = self.embedding(kmeans_target)
             res_term = self.post_proj(tgt_embedding)
