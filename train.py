@@ -190,7 +190,7 @@ def train(rank, a, h, avhubert_config):
 
     if rank == 0:
         kwargs = {}
-        if h.valid_unit_name is not None:
+        if h.unit_name is not None and h.valid_unit_name is not None:
             # You can apply trained kmeans model on valid set to get km labels just for reference.
             kwargs.update({
                 "km_name":h.valid_unit_name,
@@ -638,7 +638,7 @@ def main():
     parser.add_argument('--batch_size', type=int, default=8, help='per device batch size')
     parser.add_argument('--predicted-prosody', action='store_true', help='(deprecated) if specified, will use predicted prosody instead of GT in training.')
     parser.add_argument('--decay_melloss', action='store_true', help='(deprecated) if specified, will decay mel loss in first 1/5 of total epochs.')
-    parser.add_argument('--train_mode', choices=[VIDEO2MEL_MODE, VIDEO2WAV_MODE], required=True, help='v2w(video2wav), v2m(video2mel)')
+    parser.add_argument('--train_mode', choices=[VIDEO2MEL_MODE, VIDEO2WAV_MODE], default=VIDEO2MEL_MODE, help='v2w(video2wav), v2m(video2mel)')
 
     a = parser.parse_args()
     a.real_prosody = not a.predicted_prosody

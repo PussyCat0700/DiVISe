@@ -140,7 +140,7 @@ class AVHubertEncoder(nn.Module):
         if self.use_hubert_representation:
             self.hu_predictor = HuBERTRepresentationPredictor(**hu_dict)
         self.conformer_encoder = ConformerEncoder(size)
-        self.avhubert2downstream = torch.nn.Linear(768, self.attention_dim*4)
+        self.avhubert2downstream = torch.nn.Linear(cfg.encoder_embed_dim, self.attention_dim*4)
         self.attention2mel = torch.nn.Linear(self.attention_dim, num_mels)
         
     def update_steps(self, current_step, total_steps):
