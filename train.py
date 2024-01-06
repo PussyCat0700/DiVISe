@@ -8,6 +8,7 @@ from omegaconf import OmegaConf
 import torchaudio
 import torchmetrics
 from tqdm import tqdm
+from constants import GRIFFINLIM, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD
 
 from dataset import load_avhubert_config, load_dataset, get_dataloader
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -97,13 +98,16 @@ def train(rank, a, h, avhubert_config):
         hu_dict = {
             "hubert_hiddden":h.hubert_hidden  # 768 for hubert base
         }
-            
+    if a.train_mode == VIDEO2MEL_MODE:
+        generator_mode = HIFIGAN_NO_GRAD if a.hifigan_ckpt is not None else GRIFFINLIM
+    elif a.train_mode == VIDEO2WAV_MODE:
+        generator_mode = HIFIGAN_WITH_GRAD
     generator = AVHuBERTGenerator(hifigenerator_config=h,
                                   avhubert_model_config=avhubert_config["model"], 
                                   prosody_minmax_dict=prosody_minmax_dict,
                                   unit_dict=unit_dict,
                                   hu_dict=hu_dict,
-                                  with_generator=a.train_mode==VIDEO2WAV_MODE,
+                                  generator_mode=generator_mode,
                                   ).to(device)
     mpd = MultiPeriodDiscriminator().to(device)
     msd = MultiScaleDiscriminator().to(device)
@@ -124,13 +128,19 @@ def train(rank, a, h, avhubert_config):
         generator.load_pretrained_avhubertmodel(a.avhubert_ckpt, map_location=device)
     if a.hifigan_ckpt is not None:
         hifigan_weight = torch.load(a.hifigan_ckpt, map_location=device)
-        def unwrap_module_generator(weight):
-            return {'.'.join(k.split('.')[1:]):v for k,v in weight.items() if 'conv_pre' not in k}
+        def unwrap_module_generator(weight, ignore_conv_pre:bool):
+            if ignore_conv_pre:
+                return {'.'.join(k.split('.')[1:]):v for k,v in weight.items() if 'conv_pre' not in k}
+            else:
+                return {'.'.join(k.split('.')[1:]):v for k,v in weight.items()}
         def unwrap_module_discriminator(weight, name):
             return {'.'.join(k.split('.')[2:]):v for k,v in weight.items() if name in k}
-        generator.generator.load_state_dict(unwrap_module_generator(hifigan_weight["generator"]["model"]), strict=False)  # conv_pre will be ignored
-        mpd.load_state_dict(unwrap_module_discriminator(hifigan_weight["discriminator"]["model"], "mpd"))
-        msd.load_state_dict(unwrap_module_discriminator(hifigan_weight["discriminator"]["model"], "msd"))
+        generator.generator.load_state_dict(unwrap_module_generator(
+            hifigan_weight["generator"]["model"], ignore_conv_pre=a.train_mode==VIDEO2WAV_MODE,
+            ))
+        if a.train_mode == VIDEO2WAV_MODE:
+            mpd.load_state_dict(unwrap_module_discriminator(hifigan_weight["discriminator"]["model"], "mpd"))
+            msd.load_state_dict(unwrap_module_discriminator(hifigan_weight["discriminator"]["model"], "msd"))
     # TODO: It is really unreasonable to keep all training states in state_dict_do, and it is still here just for compatibility.
     if a.train_mode == VIDEO2WAV_MODE:
         if cp_g is None or cp_do is None:
@@ -212,7 +222,8 @@ def train(rank, a, h, avhubert_config):
     if a.train_mode == VIDEO2WAV_MODE:
         mpd.train()
         msd.train()
-    if a.train_mode == VIDEO2MEL_MODE:
+    if generator_mode == GRIFFINLIM:
+        # If there is no hifigan ckpt available in v2m mode, Griffin-Lim will be used
         mel2wav_inverter = MelSpectrogramInverter(h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax, device)
         mel2wav_inverter.eval()
     generator_module = generator.module if h.num_gpus > 1 else generator
@@ -508,7 +519,10 @@ def train(rank, a, h, avhubert_config):
                                                         h.fmin, h.fmax_for_loss)
                         val_err_tot["mel_spec_error_generator"] += F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_hat_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
                     elif a.train_mode == VIDEO2MEL_MODE:
-                        y_g_hat = mel2wav_inverter(y_g_avhubert_mel.detach().transpose(-1, -2))
+                        if a.hifigan_ckpt is None:
+                            y_g_hat = mel2wav_inverter(y_g_avhubert_mel.detach().transpose(-1, -2))
+                        else:
+                            y_g_hat = generator_out["wav_generated"]
                     if h.unit_name is not None and avhubert_source_batch["km"] is not None:
                         with torch.inference_mode():
                             if h.unit_method == UNIT_HARD:
@@ -630,7 +644,8 @@ def main():
     parser.add_argument('--hifigan_config', default='conf/hifigan/video2speech_template.json')  # TODO: Change back in formal release
     parser.add_argument('--avhubert_config', default='conf/avhubert/base_avhubert_30h.yaml')
     parser.add_argument('--avhubert_ckpt', help='if specified, will load pretrained weight onto AVHuBERTModel')
-    parser.add_argument('--hifigan_ckpt', help='if specified, will load pretrained weight onto HiFi-GAN')
+    parser.add_argument('--hifigan_ckpt', help='if specified, will load pretrained weight onto HiFi-GAN in v2w mode'\
+        ' as part of the model or in v2m mode (with gradient) as mel-to-audio converter in v2w mode(without gradient)')
     parser.add_argument('--training_epochs', default=30, type=int)
     parser.add_argument('--stdout_interval', default=5, type=int)
     parser.add_argument('--summary_interval', default=100, type=int)
