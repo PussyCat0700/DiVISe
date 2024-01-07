@@ -4,7 +4,7 @@ import torch.nn as nn
 from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
 from avhubert.avhubert_as_upstream import AVHubertEncoder
-from constants import GRIFFINLIM, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD
+from constants import GRIFFINLIM, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD, UNIT_HIFIGAN_NO_GRAD
 from utils import init_weights, get_padding, mpd_length_variators, msd_length_variators
 
 LRELU_SLOPE = 0.1
@@ -75,11 +75,17 @@ class ResBlock2(torch.nn.Module):
 
 
 class Generator(torch.nn.Module):
-    def __init__(self, h, conv_indim):
+    def __init__(self, h, conv_indim, unit_nums=None):
         super(Generator, self).__init__()
         self.h = h
         self.num_kernels = len(h.resblock_kernel_sizes)
         self.num_upsamples = len(h.upsample_rates)
+        self.mode = UNIT_HIFIGAN_NO_GRAD if unit_nums is not None else None
+        # initial upsampling layers
+        if self.mode == UNIT_HIFIGAN_NO_GRAD:
+            # lookup table as in https://arxiv.org/abs/2104.00355
+            # The extra embedding to the end is used for padding in dataset collating.
+            self.lut = nn.Embedding(unit_nums+1, conv_indim)
         self.conv_pre = weight_norm(Conv1d(conv_indim, h.upsample_initial_channel, 7, 1, padding=3))
         resblock = ResBlock1 if h.resblock == '1' else ResBlock2
 
@@ -100,6 +106,8 @@ class Generator(torch.nn.Module):
         self.conv_post.apply(init_weights)
 
     def forward(self, x):
+        if self.mode == UNIT_HIFIGAN_NO_GRAD:
+            x = self.lut(x)
         x = x.transpose(-1, -2).contiguous()
         x = self.conv_pre(x)
         for i in range(self.num_upsamples):
@@ -126,6 +134,19 @@ class Generator(torch.nn.Module):
             l.remove_weight_norm()
         remove_weight_norm(self.conv_pre)
         remove_weight_norm(self.conv_post)
+
+class AVHuBERT2UnitHiFiGAN(nn.Module):
+    def __init__(self, attention_dim, unit_nums) -> None:
+        super().__init__()
+        self.attention_dim = attention_dim
+        self.proj = nn.Linear(attention_dim*2, unit_nums+1)  # Last dim used for padding
+    
+    def forward(self, encoder_out):
+        # Original HiFi-GAN takes 100Hz mel spectrogram as input but we're doing 50Hz units here.
+        x = encoder_out.reshape(*encoder_out.shape[:-2], -1, self.attention_dim*2)
+        x = self.proj(x)
+        return x
+        
     
 class AVHuBERTGenerator(nn.Module):
     def __init__(self, hifigenerator_config, avhubert_model_config, prosody_minmax_dict, unit_dict, hu_dict, generator_mode:str=GRIFFINLIM) -> None:
@@ -141,18 +162,29 @@ class AVHuBERTGenerator(nn.Module):
         elif self.generator_mode == HIFIGAN_NO_GRAD:
             mel_dim = hifigenerator_config.num_mels
             self.generator = Generator(hifigenerator_config, mel_dim)
+        elif self.generator_mode == UNIT_HIFIGAN_NO_GRAD:
+            attention_dim = self.frontend_with_encoder.attention_dim
+            self.generator = Generator(hifigenerator_config, hifigenerator_config.num_mels, unit_nums=hifigenerator_config.k)
+            self.unit_upsampler = AVHuBERT2UnitHiFiGAN(attention_dim, hifigenerator_config.k)
     
     def forward(self, video, prosody_targets, unit_target, hu_target, mel_masks=None):
         avhubert_input = {"video": video, "audio": None,}
         encoder_out = self.frontend_with_encoder(avhubert_input, prosody_targets, unit_target, hu_target, mel_masks)
         feature_visual = encoder_out["visual_feature"]  # TODO: feed into Generator.
         mel_generated = encoder_out["melspec_out"]
+        downsampled_encoder_out = None
         if self.with_generator:
             if self.generator_mode == HIFIGAN_NO_GRAD:
                 with torch.inference_mode():
                     wav_generated = self.generator(mel_generated)  # generator takes in tensor shaped (bs, mellen, num_mel)
             elif self.generator_mode == HIFIGAN_WITH_GRAD:
                 wav_generated = self.generator(encoder_out["output"])  # generator takes in tensor shaped (bs, mellen, attention_dim)
+            elif self.generator_mode == UNIT_HIFIGAN_NO_GRAD:
+                with torch.inference_mode():
+                    # upsampler returns (bs, mellen/2, k)
+                    downsampled_encoder_out = self.unit_upsampler(encoder_out["output"])
+                    indices = downsampled_encoder_out.argmax(dim=-1)
+                    wav_generated = self.generator(indices)
         else:
             wav_generated = None
         # (bs, mellen, num_mels) -> (bs, num_mels, mellen)
@@ -162,6 +194,7 @@ class AVHuBERTGenerator(nn.Module):
                 "prosody": encoder_out["prosody"],
                 "unit": encoder_out["unit"],
                 "hu": encoder_out["hu"],
+                "revise_logits": downsampled_encoder_out,
                 }
     
     def load_pretrained_avhubertmodel(self, pretrained_avhubert_path:str, map_location):

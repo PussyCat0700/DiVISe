@@ -139,7 +139,7 @@ class HuBERTPredictor(nn.Module):
     def __init__(self, k=1000, encoder_hidden=512,):
         super().__init__()
         self.hubert_predictor = Predictor(in_dim=encoder_hidden, out_dim=k)
-        self.kmeans_embeddings = nn.Embedding(k, encoder_hidden)
+        self.kmeans_embeddings = nn.Embedding(k+1, encoder_hidden)
             
     def get_embedding(self, x, target_embedding_idx, mask):
         prediction = self.hubert_predictor(x, mask)
@@ -222,7 +222,7 @@ class HuBERTSoftContentPredictor(nn.Module):
         self.pre_proj = nn.Linear(encoder_hidden, hubert_hiddden)
         encoder_layer = nn.TransformerEncoderLayer(d_model=hubert_hiddden, dim_feedforward=3072, nhead=12, batch_first=True)
         self.predictor = nn.TransformerEncoder(encoder_layer, num_layers=6)
-        self.embedding = nn.Embedding(k, hubert_hiddden)
+        self.embedding = nn.Embedding(k+1, hubert_hiddden)
         self.post_proj = nn.Linear(hubert_hiddden, encoder_hidden)
         
     def forward(

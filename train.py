@@ -8,7 +8,7 @@ from omegaconf import OmegaConf
 import torchaudio
 import torchmetrics
 from tqdm import tqdm
-from constants import GRIFFINLIM, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD
+from constants import GRIFFINLIM, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD, UNIT_HARD, UNIT_HIFIGAN_NO_GRAD, UNIT_SOFT
 
 from dataset import load_avhubert_config, load_dataset, get_dataloader
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -43,10 +43,8 @@ logging.getLogger(__name__)
 
 VIDEO2MEL_MODE = "v2m"
 VIDEO2WAV_MODE = "v2w"
-UNIT_SOFT = "soft"
-UNIT_HARD = "hard"
 
-def initialize_val_terms(train_mode):
+def initialize_val_terms(train_mode:str, classification:bool):
     val_err_tot = {
         "mel_spec_error_avhubert": 0,
         "stoi":0,
@@ -57,6 +55,13 @@ def initialize_val_terms(train_mode):
     if train_mode == VIDEO2WAV_MODE:
         val_err_tot.update({
             "mel_spec_error_generator":0,
+        })
+    if classification:
+        val_err_tot.update({
+            "acc_hu_class":0,
+            "recall_hu_class":0,
+            "precision_hu_class":0,
+            "auc_hu_class":0,
         })
     return val_err_tot
 
@@ -71,6 +76,12 @@ def train(rank, a, h, avhubert_config):
     seed_everything(h.seed)
     torch.cuda.set_device(rank)  # A very strong boost. See https://github.com/jik876/hifi-gan/pull/25
     device = torch.device('cuda:{:d}'.format(rank))
+    if a.train_mode == VIDEO2MEL_MODE:
+        generator_mode = HIFIGAN_NO_GRAD if a.hifigan_ckpt is not None else GRIFFINLIM
+        if h.unit_method == UNIT_HIFIGAN_NO_GRAD:
+            generator_mode = UNIT_HIFIGAN_NO_GRAD
+    elif a.train_mode == VIDEO2WAV_MODE:
+        generator_mode = HIFIGAN_WITH_GRAD
     prosody_minmax_dict = None
     if h.prosody_type is not None:
         prosody_minmax_dict = {
@@ -85,23 +96,20 @@ def train(rank, a, h, avhubert_config):
             })
     unit_dict = None
     if h.unit_name is not None:
-        unit_dict = {
-            "k":h.k,
-            "is_soft":h.unit_method == UNIT_SOFT,  # This term will be poped to AVHuBERTEncoder only
-        }
-        if h.unit_method == UNIT_SOFT:
-            unit_dict.update({
-                "hubert_hiddden":h.hubert_hidden,
-            })
+        if generator_mode != UNIT_HIFIGAN_NO_GRAD:
+            unit_dict = {
+                "k":h.k,
+                "is_soft":h.unit_method == UNIT_SOFT,  # This term will be poped to AVHuBERTEncoder only
+            }
+            if h.unit_method == UNIT_SOFT:
+                unit_dict.update({
+                    "hubert_hiddden":h.hubert_hidden,
+                })
     hu_dict = None
     if h.hu_repr_name is not None:
         hu_dict = {
             "hubert_hiddden":h.hubert_hidden  # 768 for hubert base
         }
-    if a.train_mode == VIDEO2MEL_MODE:
-        generator_mode = HIFIGAN_NO_GRAD if a.hifigan_ckpt is not None else GRIFFINLIM
-    elif a.train_mode == VIDEO2WAV_MODE:
-        generator_mode = HIFIGAN_WITH_GRAD
     generator = AVHuBERTGenerator(hifigenerator_config=h,
                                   avhubert_model_config=avhubert_config["model"], 
                                   prosody_minmax_dict=prosody_minmax_dict,
@@ -188,7 +196,12 @@ def train(rank, a, h, avhubert_config):
     scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=h.lr_decay, last_epoch=last_epoch)
     if a.train_mode == VIDEO2WAV_MODE:
         scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=h.lr_decay, last_epoch=last_epoch)
-    trainset = load_dataset("train", avhubert_config["task"], h.prosody_type, h.unit_name, h.hu_repr_name)
+    dataloading_kwargs = {}
+    if h.unit_name is not None:
+        dataloading_kwargs = {
+            "km_pad_class_idx": h.k,
+        }
+    trainset = load_dataset("train", avhubert_config["task"], h.prosody_type, h.unit_name, h.hu_repr_name, **dataloading_kwargs)
     train_loader, train_sampler = get_dataloader(trainset, 
                                                 batch_size=a.batch_size,
                                                 num_workers=h.num_gpus, 
@@ -209,6 +222,7 @@ def train(rank, a, h, avhubert_config):
             kwargs.update({
                 "fake_km_mask":True,
             })
+        kwargs.update(**dataloading_kwargs)
         validset = load_dataset("valid", avhubert_config["task"], **kwargs)
         validation_loader, _ = get_dataloader(validset, 
                                             batch_size=a.batch_size,
@@ -330,8 +344,11 @@ def train(rank, a, h, avhubert_config):
                 prosody_loss = pitch_loss+energy_loss
             if h.unit_name is not None:
                 kmeans_targets = unit_target["kmeans_target"]         
-                if h.unit_method == UNIT_HARD:
-                    unit_predictions = generator_out["unit"]["kmeans_pred"]
+                if h.unit_method in [UNIT_HARD, UNIT_HIFIGAN_NO_GRAD]:
+                    if h.unit_method == UNIT_HARD:
+                        unit_predictions = generator_out["unit"]["kmeans_pred"]
+                    elif h.unit_method == UNIT_HIFIGAN_NO_GRAD:
+                        unit_predictions = generator_out["revise_logits"]
                     C = unit_predictions.shape[-1]
                     unit_predictions = unit_predictions.masked_select((~kmeans_mask).unsqueeze(-1)).reshape(-1, C)
                     kmeans_targets = kmeans_targets.masked_select(~kmeans_mask)
@@ -462,7 +479,7 @@ def train(rank, a, h, avhubert_config):
         if rank == 0:
             generator.eval()
             torch.cuda.empty_cache()
-            val_err_tot = initialize_val_terms(a.train_mode)
+            val_err_tot = initialize_val_terms(a.train_mode, h.unit_name is not None)
                 
             with torch.no_grad():
                 transcriber = bundle.get_model().to(device)
@@ -470,16 +487,12 @@ def train(rank, a, h, avhubert_config):
                 pbar2 = tqdm(validation_loader, desc="Validation in progress...")
                 if h.unit_name is not None:
                     num_classes, task, average = h.k, "multiclass", "macro"
+                    if generator_mode == UNIT_HIFIGAN_NO_GRAD:
+                        num_classes += 1
                     valid_acc = torchmetrics.Accuracy(task=task, num_classes=num_classes, average=average).to(device)
                     valid_recall = torchmetrics.Recall(task=task, num_classes=num_classes, average=average).to(device)
                     valid_precision = torchmetrics.Precision(task=task, num_classes=num_classes, average=average).to(device)
                     valid_auc = torchmetrics.AUROC(task=task, num_classes=num_classes, average=average).to(device)
-                    val_err_tot.update({
-                        "acc_hu_class":0,
-                        "recall_hu_class":0,
-                        "precision_hu_class":0,
-                        "auc_hu_class":0,
-                    })
                 for j, batch in enumerate(pbar2):
                     avhubert_source_batch = batch["net_input"]["source"]
                     y = avhubert_source_batch["audio"].to(device)
@@ -525,8 +538,12 @@ def train(rank, a, h, avhubert_config):
                             y_g_hat = generator_out["wav_generated"]
                     if h.unit_name is not None and avhubert_source_batch["km"] is not None:
                         with torch.inference_mode():
-                            if h.unit_method == UNIT_HARD:
-                                preds_km = generator_out["unit"]["kmeans_pred"]
+                            if h.unit_method in [UNIT_HARD, UNIT_HIFIGAN_NO_GRAD]:
+                                if h.unit_method == UNIT_HARD:
+                                    preds_km = generator_out["unit"]["kmeans_pred"]
+                                elif h.unit_method == UNIT_HIFIGAN_NO_GRAD:
+                                    preds_km = generator_out["revise_logits"]
+                                    # preds_km = preds_km[..., :-1]  # rid of padding class idx... WON'T WORK?!
                                 preds_km = preds_km.transpose(2, 1)  # (B, C, T)
                             elif h.unit_method == UNIT_SOFT:
                                 embedding_predictions = generator_out["unit"]["generated_softunit"]  # [B, T, hubert_hidden]
@@ -683,7 +700,7 @@ def main():
         port -= random.randint(100, 1000)
         h.dist_config['dist_url'] = ':'.join(splits[:-1]+[str(port)])
         
-    val_term_for_test = initialize_val_terms(a.train_mode)
+    val_term_for_test = initialize_val_terms(a.train_mode, h.unit_name is not None)
     # simple hacking for v2m mode
     if a.train_mode == VIDEO2MEL_MODE and h.save_on_metric == 'mel_spec_error_generator':
         h.save_on_metric = "mel_spec_error_avhubert"

@@ -91,6 +91,7 @@ class AVHubertDataset(FairseqDataset):
             max_sample_seconds: Optional[float] = None,
             pitch_type: Optional[str] = None,  # Should be pyworld or kaldi
             km_path: Optional[str] = None,  # Should be path to your .km file
+            km_pad_class: Optional[int] = None,  # This will be neccessary in end-to-end training
             hu_name: Optional[str] = None,  # Should be {kmeans_split} in hubertrep_export.py 
             fake_km_mask: bool = False,  # provide km padding mask even on a set without km labels.
             shuffle: bool = True,
@@ -135,6 +136,7 @@ class AVHubertDataset(FairseqDataset):
         self.pitch_type = pitch_type
         self.hu_name = hu_name
         self.fake_km_mask = fake_km_mask
+        self.km_pad_idx = km_pad_class
         if km_path:
             # km_label is stored in a single text-format file so it must be preloaded into running memory.
             with open(km_path, 'r') as f:
@@ -369,7 +371,8 @@ class AVHubertDataset(FairseqDataset):
                 km_size = func(km_sizes, self.max_km_sample_size)
                 km_starts = [int(second_start*self.sr_km) for second_start in second_starts]
                 if with_km:
-                    collated_km, padding_mask_km, km_starts = self.collater_wav(km_source, km_size, km_starts)
+                    collated_km, padding_mask_km, km_starts = self.collater_wav(km_source, km_size, km_starts, 
+                                                                                pad_value=self.km_pad_idx if self.km_pad_idx is not None else 0.0)
                 if with_hu:
                     collated_hu, padding_mask_km, km_starts = self.collater_wav(hu_source, km_size, km_starts)
             elif self.fake_km_mask:
@@ -439,7 +442,7 @@ class AVHubertDataset(FairseqDataset):
         collated_videos = collated_videos.permute((0, 4, 1, 2, 3)).contiguous() # [B, T, H, W, C] -> [B, C, T, H, W]
         return collated_videos, padding_mask_mel, video_starts
     
-    def collater_wav(self, wavs, wav_size, wav_starts=None):
+    def collater_wav(self, wavs, wav_size, wav_starts=None, pad_value=0.0):
         wav_feat_size = list(wavs[0].shape[1:])  # In case we have pitch as input. Raw waveforms doesn't need this.
         collated_size = [len(wavs), wav_size]+wav_feat_size
         collated_wavs = wavs[0].new_zeros(collated_size)  # [B, T] for wav or [B, T, 2] for kaldi pitch
@@ -455,7 +458,7 @@ class AVHubertDataset(FairseqDataset):
             elif diff < 0:
                 assert self.pad_audio
                 collated_wavs[i] = torch.cat(
-                    [wav, wav.new_full([-diff]+wav_feat_size, 0.0)]
+                    [wav, wav.new_full([-diff]+wav_feat_size, pad_value)]
                 )
                 padding_mask[i, diff:] = True
             else:
