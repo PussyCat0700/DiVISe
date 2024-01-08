@@ -80,6 +80,14 @@ def load_label_offset(label_path, inds, tot):
         offsets = [(offsets[i], offsets[i + 1]) for i in inds]
     return offsets
 
+def load_km_labels(km_path, inds, tot):
+    with open(km_path, 'r') as f:
+        km_labels = f.readlines()
+        assert len(km_labels) == tot, f"{len(km_labels)=} does not match lines in tsv files({tot})." \
+                    "Please check if they are on the same split."
+        km_labels = [km_labels[i] for i in inds]
+    return km_labels
+
 class AVHubertDataset(FairseqDataset):
     def __init__(
             self,
@@ -139,10 +147,7 @@ class AVHubertDataset(FairseqDataset):
         self.km_pad_idx = km_pad_class
         if km_path:
             # km_label is stored in a single text-format file so it must be preloaded into running memory.
-            with open(km_path, 'r') as f:
-                self.km_labels = f.readlines()
-            assert len(self.km_labels) == len(self.names), f"{len(self.km_labels)=} does not match lines in tsv files({len(self.names)})." \
-                "Please check if they are on the same split."
+            self.km_labels = load_km_labels(km_path, inds, tot)
         else:
             self.km_labels = None
         if image_aug:
