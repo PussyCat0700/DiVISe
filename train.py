@@ -486,9 +486,7 @@ def train(rank, a, h, avhubert_config):
                 valid_greedy_decoder = GreedyCTCDecoder(labels=bundle.get_labels())
                 pbar2 = tqdm(validation_loader, desc="Validation in progress...")
                 if h.unit_name is not None:
-                    num_classes, task, average = h.k, "multiclass", "macro"
-                    if generator_mode == UNIT_HIFIGAN_NO_GRAD:
-                        num_classes += 1
+                    num_classes, task, average = h.k+1, "multiclass", "macro"
                     valid_acc = torchmetrics.Accuracy(task=task, num_classes=num_classes, average=average).to(device)
                     valid_recall = torchmetrics.Recall(task=task, num_classes=num_classes, average=average).to(device)
                     valid_precision = torchmetrics.Precision(task=task, num_classes=num_classes, average=average).to(device)

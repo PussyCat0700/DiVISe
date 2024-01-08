@@ -138,7 +138,7 @@ class HuBERTPredictor(nn.Module):
     # TODO: check pitch/energy min/max for LRS3
     def __init__(self, k=1000, encoder_hidden=512,):
         super().__init__()
-        self.hubert_predictor = Predictor(in_dim=encoder_hidden, out_dim=k)
+        self.hubert_predictor = Predictor(in_dim=encoder_hidden, out_dim=k+1)
         self.kmeans_embeddings = nn.Embedding(k+1, encoder_hidden)
             
     def get_embedding(self, x, target_embedding_idx, mask):
