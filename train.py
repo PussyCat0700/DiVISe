@@ -51,6 +51,7 @@ def initialize_val_terms(train_mode:str, classification:bool):
         "estoi":0,
         "pesq":0,
         "wer":0,
+        "wer_vocoder":0,
     }
     if train_mode == VIDEO2WAV_MODE:
         val_err_tot.update({
@@ -78,7 +79,7 @@ def train(rank, a, h, avhubert_config):
     device = torch.device('cuda:{:d}'.format(rank))
     if a.train_mode == VIDEO2MEL_MODE:
         generator_mode = HIFIGAN_NO_GRAD if a.hifigan_ckpt is not None else GRIFFINLIM
-        if h.unit_method == UNIT_HIFIGAN_NO_GRAD:
+        if h.unit_name is not None and h.unit_method == UNIT_HIFIGAN_NO_GRAD:
             generator_mode = UNIT_HIFIGAN_NO_GRAD
     elif a.train_mode == VIDEO2WAV_MODE:
         generator_mode = HIFIGAN_WITH_GRAD
@@ -236,10 +237,9 @@ def train(rank, a, h, avhubert_config):
     if a.train_mode == VIDEO2WAV_MODE:
         mpd.train()
         msd.train()
-    if generator_mode == GRIFFINLIM:
-        # If there is no hifigan ckpt available in v2m mode, Griffin-Lim will be used
-        mel2wav_inverter = MelSpectrogramInverter(h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax, device)
-        mel2wav_inverter.eval()
+    # Griffin-Lim is used in comparison with Vocoder
+    mel2wav_inverter = MelSpectrogramInverter(h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax, device)
+    mel2wav_inverter.eval()
     generator_module = generator.module if h.num_gpus > 1 else generator
     generator_module.frontend_with_encoder.update_steps(steps, a.training_epochs*len(train_loader))
     bundle = torchaudio.pipelines.WAV2VEC2_ASR_BASE_960H
@@ -532,10 +532,9 @@ def train(rank, a, h, avhubert_config):
                                                         h.fmin, h.fmax_for_loss)
                         val_err_tot["mel_spec_error_generator"] += F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_hat_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
                     elif a.train_mode == VIDEO2MEL_MODE:
-                        if a.hifigan_ckpt is None:
-                            y_g_hat = mel2wav_inverter(y_g_avhubert_mel.detach().transpose(-1, -2))
-                        else:
-                            y_g_hat = generator_out["wav_generated"]
+                        y_g_hat = mel2wav_inverter(y_g_avhubert_mel.detach().transpose(-1, -2))
+                        if a.hifigan_ckpt is not None:
+                            y_g_hat_vc = generator_out["wav_generated"]
                     if h.unit_name is not None and avhubert_source_batch["km"] is not None:
                         with torch.inference_mode():
                             if h.unit_method in [UNIT_HARD, UNIT_HIFIGAN_NO_GRAD]:
@@ -572,7 +571,17 @@ def train(rank, a, h, avhubert_config):
                             edit_dis = editdistance.eval(generated_text, gt_text)
                             wer = edit_dis / len(gt_text)
                             val_err_tot["wer"] += wer / n_batch
-                    pbar2.set_description(f'current wer={val_err_tot["wer"]/(j+1)}')
+                    if a.hifigan_ckpt is not None:
+                        with torch.inference_mode():
+                            lengths = (~wav_padding_mask).sum(dim=-1)  # (batch_size,)
+                            # model definition can be found in https://pytorch.org/audio/stable/_modules/torchaudio/models/wav2vec2/model.html
+                            emissions, lengths = transcriber(y_g_hat_vc.squeeze(), lengths)  # length indicates the valid length in time axis of emissions
+                            for emission, gt_text, length in zip(emissions, gt_texts, lengths):
+                                generated_text = valid_greedy_decoder(emission, length)
+                                edit_dis = editdistance.eval(generated_text, gt_text)
+                                wer = edit_dis / len(gt_text)
+                                val_err_tot["wer_vocoder"] += wer / n_batch
+                    pbar2.set_description(f'current wer={val_err_tot["wer_vocoder"]/(j+1)}(vc), {val_err_tot["wer"]/(j+1)}(gf)')
                     
                     audio_metrics = compute_audio_metrics_torch(y_g_hat, y, 16000, ~wav_padding_mask)
                     n_batch = len(audio_metrics)
@@ -599,6 +608,8 @@ def train(rank, a, h, avhubert_config):
                                             plot_spectrogram(y_hat_spec.squeeze(0).cpu().numpy()), steps)
                         elif a.train_mode == VIDEO2MEL_MODE:
                             sw.add_audio(f'generated_ep{epoch}/y_hat_griffin_lim{j}', y_g_hat[0], steps, h.sampling_rate)
+                            if a.hifigan_ckpt is not None:
+                                sw.add_audio(f'generated_ep{epoch}/y_hat_vocoder{j}', y_g_hat_vc[0], steps, h.sampling_rate)
                             sw.add_figure(f'generated_ep{epoch}/y_hat_vanilla_mel_{j}',
                                             plot_spectrogram(y_g_avhubert_mel[0].squeeze(0).cpu().numpy()), steps)
 

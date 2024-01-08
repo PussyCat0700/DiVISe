@@ -141,7 +141,7 @@ class AVHubertDataset(FairseqDataset):
             # km_label is stored in a single text-format file so it must be preloaded into running memory.
             with open(km_path, 'r') as f:
                 self.km_labels = f.readlines()
-            assert len(self.km_labels) == len(self.names), f"{len(self.km_labels)=} does not match lines in tsv files." \
+            assert len(self.km_labels) == len(self.names), f"{len(self.km_labels)=} does not match lines in tsv files({len(self.names)})." \
                 "Please check if they are on the same split."
         else:
             self.km_labels = None
