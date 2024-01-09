@@ -52,6 +52,9 @@ def initialize_val_terms(train_mode:str, classification:bool):
         "pesq":0,
         "wer":0,
         "wer_vocoder":0,
+        "stoi_vocoder":0,
+        "estoi_vocoder":0,
+        "pesq_vocoder":0
     }
     if train_mode == VIDEO2WAV_MODE:
         val_err_tot.update({
@@ -412,7 +415,8 @@ def train(rank, a, h, avhubert_config):
                 alpha_avhubert = h.base_alpha_avhubert*alpha_avhubert
             else:
                 alpha_avhubert = h.base_alpha_avhubert
-            loss_mel_avhubert = F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_avhubert_mel.masked_select(~mel_padding_mask.unsqueeze(1))) * alpha_avhubert
+            if y_g_avhubert_mel is not None:
+                loss_mel_avhubert = F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_avhubert_mel.masked_select(~mel_padding_mask.unsqueeze(1))) * alpha_avhubert
 
             if a.train_mode == VIDEO2WAV_MODE:
                 y_df_hat_r, y_df_hat_g, fmap_f_r, fmap_f_g = mpd(y, y_g_hat)
@@ -424,7 +428,9 @@ def train(rank, a, h, avhubert_config):
                 loss_gen_s, losses_gen_s = generator_loss(y_ds_hat_g, ~wav_padding_mask, 'msd')
                 loss_gen_all = loss_gen_all + loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f
             # Used to be loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel + loss_mel_avhubert
-            loss_gen_all += loss_mel_avhubert
+            if y_g_avhubert_mel is not None:
+                # ReVISE doesn't need this loss
+                loss_gen_all += loss_mel_avhubert
             if h.prosody_type is not None:
                 loss_gen_all += prosody_loss
             if h.unit_name is not None:
@@ -440,13 +446,19 @@ def train(rank, a, h, avhubert_config):
                     with torch.no_grad():
                         if a.train_mode == VIDEO2WAV_MODE:
                             mel_error_generator = F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_hat_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
-                        mel_error_avhubert = F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_avhubert_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
+                        if y_g_avhubert_mel is not None:
+                            mel_error_avhubert = F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_avhubert_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
                     if a.train_mode == VIDEO2WAV_MODE:
                         pbar.set_description('Epoch: {:d}, Gen Loss Total : {:4.3f}, Video2Wav Mel-Spec. Error : {:4.3f}, s/b : {:4.3f}'.
                             format(epoch, loss_gen_all, mel_error_generator, time.time() - start_b))
                     elif a.train_mode == VIDEO2MEL_MODE:
-                        pbar.set_description('Epoch: {:d}, Gen Loss Total : {:4.3f}, Video2Mel Mel-Spec. Error : {:4.3f}, s/b : {:4.3f}'.
-                            format(epoch, loss_gen_all, mel_error_avhubert, time.time() - start_b))
+                        if y_g_avhubert_mel is not None:
+                            pbar.set_description('Epoch: {:d}, Gen Loss Total : {:4.3f}, Video2Mel Mel-Spec. Error : {:4.3f}, s/b : {:4.3f}'.
+                                format(epoch, loss_gen_all, mel_error_avhubert, time.time() - start_b))
+                        else:
+                            # ReVISE logging
+                            pbar.set_description('Epoch: {:d}, Gen Loss Total : {:4.3f}, Unit. Error : {:4.3f}, s/b : {:4.3f}'.
+                                format(epoch, loss_gen_all, unit_loss, time.time() - start_b))
 
                 # Tensorboard summary logging
                 if steps % a.summary_interval == 0:
@@ -455,7 +467,8 @@ def train(rank, a, h, avhubert_config):
                     log_training("gen_loss_total", loss_gen_all)
                     if a.train_mode == VIDEO2WAV_MODE:
                         log_training("mel_spec_error_generator", mel_error_generator)
-                    log_training("mel_spec_error_avhubert", mel_error_avhubert)
+                    if y_g_avhubert_mel is not None:
+                        log_training("mel_spec_error_avhubert", mel_error_avhubert)
                     if h.prosody_type is not None:
                         log_training("pitch_loss", pitch_loss)
                         log_training("energy_loss", energy_loss)
@@ -523,6 +536,7 @@ def train(rank, a, h, avhubert_config):
                                 hu_target["src_key_padding_mask"] = kmeans_mask
                     generator_out = generator(avhubert_source_batch["video"].to(device), prosody_target, unit_target, hu_target, ~mel_padding_mask)
                     y_g_avhubert_mel = generator_out["melspec_out"]
+                    y_g_hat = None
                     if a.train_mode == VIDEO2WAV_MODE:
                         y_g_hat = generator_out["wav_generated"].detach()
                         y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate,
@@ -530,7 +544,8 @@ def train(rank, a, h, avhubert_config):
                                                         h.fmin, h.fmax_for_loss)
                         val_err_tot["mel_spec_error_generator"] += F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_hat_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
                     elif a.train_mode == VIDEO2MEL_MODE:
-                        y_g_hat = mel2wav_inverter(y_g_avhubert_mel.detach().transpose(-1, -2))
+                        if y_g_avhubert_mel is not None:
+                            y_g_hat = mel2wav_inverter(y_g_avhubert_mel.detach().transpose(-1, -2))
                         if a.hifigan_ckpt is not None:
                             y_g_hat_vc = generator_out["wav_generated"]
                     if h.unit_name is not None and avhubert_source_batch["km"] is not None:
@@ -559,35 +574,39 @@ def train(rank, a, h, avhubert_config):
                             val_err_tot["recall_hu_class"] += recall
                             val_err_tot["precision_hu_class"] += precision
                             val_err_tot["auc_hu_class"] += auc
-                    n_batch = len(gt_texts)
-                    with torch.inference_mode():
-                        lengths = (~wav_padding_mask).sum(dim=-1)  # (batch_size,)
-                        # model definition can be found in https://pytorch.org/audio/stable/_modules/torchaudio/models/wav2vec2/model.html
-                        emissions, lengths = transcriber(y_g_hat.squeeze(), lengths)  # length indicates the valid length in time axis of emissions
-                        for emission, gt_text, length in zip(emissions, gt_texts, lengths):
-                            generated_text = valid_greedy_decoder(emission, length)
-                            edit_dis = editdistance.eval(generated_text, gt_text)
-                            wer = edit_dis / len(gt_text)
-                            val_err_tot["wer"] += wer / n_batch
-                    if a.hifigan_ckpt is not None:
+                    def eval_metrics(g_hat, postfix=None):
+                        n_batch = len(gt_texts)
+                        wer_name = "wer"
+                        stoi_name = "stoi"
+                        estoi_name = "estoi"
+                        pesq_name = "pesq"
+                        if postfix is not None:
+                            wer_name += f'_{postfix}'
+                            stoi_name += f'_{postfix}'
+                            estoi_name += f'_{postfix}'
+                            pesq_name += f'_{postfix}'
                         with torch.inference_mode():
                             lengths = (~wav_padding_mask).sum(dim=-1)  # (batch_size,)
                             # model definition can be found in https://pytorch.org/audio/stable/_modules/torchaudio/models/wav2vec2/model.html
-                            emissions, lengths = transcriber(y_g_hat_vc.squeeze(), lengths)  # length indicates the valid length in time axis of emissions
+                            emissions, lengths = transcriber(g_hat.squeeze(), lengths)  # length indicates the valid length in time axis of emissions
                             for emission, gt_text, length in zip(emissions, gt_texts, lengths):
                                 generated_text = valid_greedy_decoder(emission, length)
                                 edit_dis = editdistance.eval(generated_text, gt_text)
                                 wer = edit_dis / len(gt_text)
-                                val_err_tot["wer_vocoder"] += wer / n_batch
+                                val_err_tot[wer_name] += wer / n_batch
+                            audio_metrics = compute_audio_metrics_torch(g_hat, y, 16000, ~wav_padding_mask)
+                            n_batch = len(audio_metrics)
+                            for audio_metric in audio_metrics:
+                                val_err_tot[stoi_name] += audio_metric["stoi"] / n_batch
+                                val_err_tot[estoi_name] += audio_metric["estoi"] / n_batch
+                                val_err_tot[pesq_name] += audio_metric["pesq"] / n_batch
+                    if y_g_hat is not None:
+                        eval_metrics(y_g_hat)
+                    if y_g_hat_vc is not None:
+                        eval_metrics(y_g_hat_vc, "vocoder")
                     pbar2.set_description(f'current wer={val_err_tot["wer_vocoder"]/(j+1)}(vc), {val_err_tot["wer"]/(j+1)}(gf)')
-                    
-                    audio_metrics = compute_audio_metrics_torch(y_g_hat, y, 16000, ~wav_padding_mask)
-                    n_batch = len(audio_metrics)
-                    for audio_metric in audio_metrics:
-                        val_err_tot["stoi"] += audio_metric["stoi"] / n_batch
-                        val_err_tot["estoi"] += audio_metric["estoi"] / n_batch
-                        val_err_tot["pesq"] += audio_metric["pesq"] / n_batch
-                    val_err_tot["mel_spec_error_avhubert"] += F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_avhubert_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
+                    if y_g_avhubert_mel is not None:
+                        val_err_tot["mel_spec_error_avhubert"] += F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_avhubert_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
 
                     if j <= 4:
                         # save first few validation samples
@@ -605,11 +624,13 @@ def train(rank, a, h, avhubert_config):
                             sw.add_figure(f'generated_ep{epoch}/y_hat_spec_{j}',
                                             plot_spectrogram(y_hat_spec.squeeze(0).cpu().numpy()), steps)
                         elif a.train_mode == VIDEO2MEL_MODE:
-                            sw.add_audio(f'generated_ep{epoch}/y_hat_griffin_lim{j}', y_g_hat[0], steps, h.sampling_rate)
-                            if a.hifigan_ckpt is not None:
+                            if y_g_hat is not None:
+                                sw.add_audio(f'generated_ep{epoch}/y_hat_griffin_lim{j}', y_g_hat[0], steps, h.sampling_rate)
+                            if y_g_hat_vc is not None:
                                 sw.add_audio(f'generated_ep{epoch}/y_hat_vocoder{j}', y_g_hat_vc[0], steps, h.sampling_rate)
-                            sw.add_figure(f'generated_ep{epoch}/y_hat_vanilla_mel_{j}',
-                                            plot_spectrogram(y_g_avhubert_mel[0].squeeze(0).cpu().numpy()), steps)
+                            if y_g_avhubert_mel is not None:
+                                sw.add_figure(f'generated_ep{epoch}/y_hat_vanilla_mel_{j}',
+                                                plot_spectrogram(y_g_avhubert_mel[0].squeeze(0).cpu().numpy()), steps)
 
                 del transcriber, valid_greedy_decoder
                 for val_err_key, val_err_term in val_err_tot.items():

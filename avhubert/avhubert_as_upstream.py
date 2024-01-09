@@ -121,9 +121,10 @@ class AVHubertEncoder(nn.Module):
             "attention_dim":512,
         }
     }
-    def __init__(self, cfg, num_mels, prosody_minmax_dict, unit_dict, hu_dict, size="M", mel_before_conformer=False) -> None:
+    def __init__(self, cfg, num_mels, prosody_minmax_dict, unit_dict, hu_dict, size="M", mel_before_conformer=False, early_return=False) -> None:
         super().__init__()
         self.mel_before_conformer = mel_before_conformer
+        self.early_return = early_return
         self.attention_dim = self.lookup_table[size]["attention_dim"]
         self.avhubert_model = AVHubertModel(cfg=cfg)
         self.use_prosody = prosody_minmax_dict is not None
@@ -139,9 +140,10 @@ class AVHubertEncoder(nn.Module):
                 self.unit_predictor = HuBERTPredictor(**unit_dict)
         if self.use_hubert_representation:
             self.hu_predictor = HuBERTRepresentationPredictor(**hu_dict)
-        self.conformer_encoder = ConformerEncoder(size)
         self.avhubert2downstream = torch.nn.Linear(cfg.encoder_embed_dim, self.attention_dim*4)
-        self.attention2mel = torch.nn.Linear(self.attention_dim, num_mels)
+        if not self.early_return:
+            self.conformer_encoder = ConformerEncoder(size)
+            self.attention2mel = torch.nn.Linear(self.attention_dim, num_mels)
         
     def update_steps(self, current_step, total_steps):
         if self.use_hubert_representation:
@@ -151,6 +153,8 @@ class AVHubertEncoder(nn.Module):
         # source should only include video
         encoder_out, feature, mask = self.avhubert_model.extract_finetune_with_feature(source)  # (bs, vidlen, 768)
         encoder_out = self.avhubert2downstream(encoder_out)  # (bs, vidlen, attention_dim*4)
+        if self.early_return:
+            return encoder_out
         if self.use_hubert_units or self.use_hubert_representation:
             encoder_out = encoder_out.reshape(*encoder_out.shape[:-2], -1, self.attention_dim*2)
             if self.use_hubert_units:

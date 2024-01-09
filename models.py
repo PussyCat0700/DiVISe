@@ -153,7 +153,8 @@ class AVHuBERTGenerator(nn.Module):
         super().__init__()
         # Intuitively I think generating mel-spectrograms after conformer will be better regardless of generator.
         # To load runs done by previous commits, set mel_before_conformer to True.
-        self.frontend_with_encoder = AVHubertEncoder(avhubert_model_config, hifigenerator_config.num_mels, prosody_minmax_dict=prosody_minmax_dict, unit_dict=unit_dict, hu_dict=hu_dict, mel_before_conformer=False)
+        self.early_return = generator_mode == UNIT_HIFIGAN_NO_GRAD
+        self.frontend_with_encoder = AVHubertEncoder(avhubert_model_config, hifigenerator_config.num_mels, prosody_minmax_dict=prosody_minmax_dict, unit_dict=unit_dict, hu_dict=hu_dict, mel_before_conformer=False, early_return=self.early_return)
         self.generator_mode = generator_mode
         self.with_generator = generator_mode != GRIFFINLIM
         if self.generator_mode == HIFIGAN_WITH_GRAD:
@@ -170,32 +171,40 @@ class AVHuBERTGenerator(nn.Module):
     def forward(self, video, prosody_targets, unit_target, hu_target, mel_masks=None):
         avhubert_input = {"video": video, "audio": None,}
         encoder_out = self.frontend_with_encoder(avhubert_input, prosody_targets, unit_target, hu_target, mel_masks)
-        feature_visual = encoder_out["visual_feature"]  # TODO: feed into Generator.
-        mel_generated = encoder_out["melspec_out"]
         downsampled_encoder_out = None
         if self.with_generator:
             if self.generator_mode == HIFIGAN_NO_GRAD:
                 with torch.inference_mode():
-                    wav_generated = self.generator(mel_generated)  # generator takes in tensor shaped (bs, mellen, num_mel)
+                    wav_generated = self.generator(encoder_out["melspec_out"])  # generator takes in tensor shaped (bs, mellen, num_mel)
             elif self.generator_mode == HIFIGAN_WITH_GRAD:
                 wav_generated = self.generator(encoder_out["output"])  # generator takes in tensor shaped (bs, mellen, attention_dim)
             elif self.generator_mode == UNIT_HIFIGAN_NO_GRAD:
+                downsampled_encoder_out = self.unit_upsampler(encoder_out)
                 with torch.inference_mode():
                     # upsampler returns (bs, mellen/2, k)
-                    downsampled_encoder_out = self.unit_upsampler(encoder_out["output"])
                     indices = downsampled_encoder_out.argmax(dim=-1)
                     wav_generated = self.generator(indices)
         else:
             wav_generated = None
         # (bs, mellen, num_mels) -> (bs, num_mels, mellen)
-        mel_generated = mel_generated.permute(0, 2, 1).contiguous()
-        return {"wav_generated":wav_generated,  # (bs, wavlen) or None if self.with_generator is False
+        ret = {
+            "wav_generated":wav_generated,  # (bs, wavlen) or None if self.with_generator is False
+            "melspec_out":None,
+            "prosody": None,
+            "unit": None,
+            "hu": None,
+            "revise_logits": downsampled_encoder_out,
+        }
+        if not self.early_return:
+            mel_generated = encoder_out["melspec_out"]
+            mel_generated = mel_generated.permute(0, 2, 1).contiguous()
+            ret.update({
                 "melspec_out":mel_generated,  # (bs, mellen, num_mels)
                 "prosody": encoder_out["prosody"],
                 "unit": encoder_out["unit"],
                 "hu": encoder_out["hu"],
-                "revise_logits": downsampled_encoder_out,
-                }
+            })
+        return ret
     
     def load_pretrained_avhubertmodel(self, pretrained_avhubert_path:str, map_location):
         avhubert_weight = torch.load(pretrained_avhubert_path, map_location=map_location)['model']
