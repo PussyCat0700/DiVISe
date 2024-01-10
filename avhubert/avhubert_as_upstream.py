@@ -145,6 +145,10 @@ class AVHubertEncoder(nn.Module):
             self.conformer_encoder = ConformerEncoder(size)
             self.attention2mel = torch.nn.Linear(self.attention_dim, num_mels)
         
+    def avhubert_grad(self, enable:bool):
+        for _, param in self.avhubert_model.named_parameters():
+            param.requires_grad = enable
+    
     def update_steps(self, current_step, total_steps):
         if self.use_hubert_representation:
             self.hu_predictor.reset_prob(current_step, total_steps)

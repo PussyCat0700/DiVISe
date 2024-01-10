@@ -12,6 +12,30 @@ from avhubert.avhubert_as_upstream import AVHubertPretrainingConfig
 matplotlib.use("Agg")
 import matplotlib.pylab as plt
 from scipy.io.wavfile import write
+from torch.optim.lr_scheduler import LRScheduler
+
+class TriStageLRScheduler(LRScheduler):
+    def __init__(self, optimizer, total_updates, t1, t2, last_lr_factor=0.05, last_epoch=-1, verbose=False):
+        self.total_updates = total_updates
+        self.t1 = t1
+        self.t2 = t2
+        self.t1_updates = int(self.total_updates * self.t1 / 100)
+        self.t2_updates = int(self.total_updates * self.t2 / 100)
+        self.t3_updates = self.total_updates - self.t1_updates - self.t2_updates
+        self.last_lr_factor = last_lr_factor
+        super(TriStageLRScheduler, self).__init__(optimizer, last_epoch, verbose)
+
+    def get_lr(self):
+        if self.last_epoch < self.t1_updates:
+            # Linearly ramp up the learning rate
+            return [base_lr * self.last_epoch / self.t1_updates for base_lr in self.base_lrs]
+        elif self.last_epoch < self.t1_updates + self.t2_updates:
+            # Keep the learning rate constant
+            return [base_lr for base_lr in self.base_lrs]
+        else:
+            # Linearly decay the learning rate to last_lr_factor of the base_lr
+            decay_progress = (self.last_epoch - self.t1_updates - self.t2_updates) / self.t3_updates
+            return [base_lr - (base_lr * (1 - self.last_lr_factor) * decay_progress) for base_lr in self.base_lrs]
 
 def seed_everything(seed):
     if torch.distributed.is_initialized():

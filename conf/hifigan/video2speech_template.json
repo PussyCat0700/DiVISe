@@ -1,9 +1,12 @@
 {
     "resblock": "1",
     "num_gpus": 0,
+    "batch_size": 10,
     "learning_rate": 0.0002,
     "adam_b1": 0.8,
     "adam_b2": 0.99,
+    "total_updates":45000,
+    "revise_setting":false,
     "lr_decay": 0.999,
     "seed": 1234,
     "base_alpha_avhubert": 60,

@@ -7,7 +7,7 @@ task:
   single_target: true
   fine_tuning: true
   stack_order_audio: 4
-  max_sample_seconds: 3.0
+  max_sample_seconds: 4.0
   modalities: ["video", "audio"]
   image_aug: true
   pad_audio: true

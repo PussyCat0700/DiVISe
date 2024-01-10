@@ -1,3 +1,4 @@
+import math
 import editdistance
 import logging
 import random
@@ -28,7 +29,7 @@ from env import AttrDict, build_env
 from dataset.meldataset import MelSpectrogramInverter, mel_spectrogram, mel_spectrogram_and_energy
 from models import AVHuBERTGenerator, MultiPeriodDiscriminator, MultiScaleDiscriminator, feature_loss, generator_loss,\
     discriminator_loss
-from utils import DataLoaderSeeder, plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint, seed_everything
+from utils import DataLoaderSeeder, TriStageLRScheduler, plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint, seed_everything
 from prosody_predictor.predictor import ProsodyPredictor
 from audio.eval_utils import GreedyCTCDecoder, compute_audio_metrics_torch
 
@@ -197,9 +198,6 @@ def train(rank, a, h, avhubert_config):
         if state_dict_g is not None:
             optim_g.load_state_dict(state_dict_g['optim_g'])
 
-    scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=h.lr_decay, last_epoch=last_epoch)
-    if a.train_mode == VIDEO2WAV_MODE:
-        scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=h.lr_decay, last_epoch=last_epoch)
     dataloading_kwargs = {}
     if h.unit_name is not None:
         dataloading_kwargs = {
@@ -207,7 +205,7 @@ def train(rank, a, h, avhubert_config):
         }
     trainset = load_dataset("train", avhubert_config["task"], h.prosody_type, h.unit_name, h.hu_repr_name, **dataloading_kwargs)
     train_loader, train_sampler = get_dataloader(trainset, 
-                                                batch_size=a.batch_size,
+                                                batch_size=h.batch_size,
                                                 num_workers=h.num_gpus, 
                                                 dist_sampler=h.num_gpus > 1,
                                                 pin_memory=not h.num_gpus > 1,
@@ -229,7 +227,7 @@ def train(rank, a, h, avhubert_config):
         kwargs.update(**dataloading_kwargs)
         validset = load_dataset("valid", avhubert_config["task"], **kwargs)
         validation_loader, _ = get_dataloader(validset, 
-                                            batch_size=a.batch_size,
+                                            batch_size=h.batch_size,
                                             num_workers=h.num_gpus, 
                                             dist_sampler=h.num_gpus > 1, 
                                             pin_memory=not h.num_gpus > 1,
@@ -243,8 +241,22 @@ def train(rank, a, h, avhubert_config):
     # Griffin-Lim is used in comparison with Vocoder
     mel2wav_inverter = MelSpectrogramInverter(h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax, device)
     mel2wav_inverter.eval()
+    a.training_epochs = math.ceil(h.total_updates / h.num_gpus / len(train_loader))
+    actual_total_updates = a.training_epochs*len(train_loader)
+    logging.info(f"{actual_total_updates=}")
+    logging.info(f"{a.training_epochs=}")
     generator_module = generator.module if h.num_gpus > 1 else generator
-    generator_module.frontend_with_encoder.update_steps(steps, a.training_epochs*len(train_loader))
+    if not h.revise_setting:
+        scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=h.lr_decay, last_epoch=last_epoch)
+    else:
+        actual_frozen_updates = math.ceil(h.frozen_steps / h.num_gpus)
+        logging.info(f"AVHuBERT will be frozen for {actual_frozen_updates} updates.")
+        generator_module.frontend_with_encoder.avhubert_grad(False)
+        # Exactly as in ReVISE Tab. 17
+        scheduler_g = TriStageLRScheduler(optim_g, actual_total_updates, h.t1_percent, h.t2_percent, last_lr_factor=h.last_lr_factor,last_epoch=steps-1)
+    if a.train_mode == VIDEO2WAV_MODE:
+        scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=h.lr_decay, last_epoch=last_epoch)
+    generator_module.frontend_with_encoder.update_steps(steps, actual_total_updates)
     bundle = torchaudio.pipelines.WAV2VEC2_ASR_BASE_960H
     for epoch in range(max(0, last_epoch), a.training_epochs):
         train_ratio = epoch / a.training_epochs  # [0, 1-1/a.training_epochs]
@@ -481,8 +493,16 @@ def train(rank, a, h, avhubert_config):
                     log_training("alpha_avhubert", alpha_avhubert)
 
             steps += 1
-        scheduler_g.step()
-        if a.train_mode == VIDEO2WAV_MODE:
+            if h.revise_setting:
+                # scheduler is updated step-level
+                scheduler_g.step()
+                if steps == actual_frozen_updates:
+                    generator_module.frontend_with_encoder.avhubert_grad(True)
+                    if rank == 0:
+                        sw.add_scalar(f"training/unfreeze_step", steps, steps)
+        if not h.revise_setting:
+            scheduler_g.step()
+        if a.train_mode == VIDEO2WAV_MODE:  
             scheduler_d.step()
         
         if rank == 0:
@@ -693,11 +713,9 @@ def main():
     parser.add_argument('--avhubert_ckpt', help='if specified, will load pretrained weight onto AVHuBERTModel')
     parser.add_argument('--hifigan_ckpt', help='if specified, will load pretrained weight onto HiFi-GAN in v2w mode'\
         ' as part of the model or in v2m mode (with gradient) as mel-to-audio converter in v2w mode(without gradient)')
-    parser.add_argument('--training_epochs', default=30, type=int)
     parser.add_argument('--stdout_interval', default=5, type=int)
     parser.add_argument('--summary_interval', default=100, type=int)
     parser.add_argument('--wandb', action='store_true')
-    parser.add_argument('--batch_size', type=int, default=8, help='per device batch size')
     parser.add_argument('--predicted-prosody', action='store_true', help='(deprecated) if specified, will use predicted prosody instead of GT in training.')
     parser.add_argument('--decay_melloss', action='store_true', help='(deprecated) if specified, will decay mel loss in first 1/5 of total epochs.')
     parser.add_argument('--train_mode', choices=[VIDEO2MEL_MODE, VIDEO2WAV_MODE], default=VIDEO2MEL_MODE, help='v2w(video2wav), v2m(video2mel)')
@@ -746,8 +764,8 @@ def main():
         torch.cuda.manual_seed(h.seed)
         h.num_gpus = torch.cuda.device_count()
         # a.batch_size = int(a.batch_size / h.num_gpus)
-        a.total_batch_size = a.batch_size * h.num_gpus
-        logging.info(f'Batch size per GPU :{a.batch_size}')
+        a.total_batch_size = h.batch_size * h.num_gpus
+        logging.info(f'Batch size per GPU :{h.batch_size}')
         logging.info(f"Total batch size on all GPUs :{a.total_batch_size}")
     else:
         pass
