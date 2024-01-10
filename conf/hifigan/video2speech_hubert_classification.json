@@ -2,12 +2,15 @@
     "resblock": "1",
     "num_gpus": 0,
     "batch_size": 10,
-    "learning_rate": 0.0002,
-    "adam_b1": 0.8,
-    "adam_b2": 0.99,
+    "learning_rate": 6e-5,
+    "adam_b1": 0.9,
+    "adam_b2": 0.98,
     "total_updates":45000,
-    "revise_setting":false,
-    "lr_decay": 0.999,
+    "revise_setting":true,
+    "frozen_steps":5000,
+    "t1_percent":10,
+    "t2_percent":20,
+    "last_lr_factor":0.05,
     "seed": 1234,
     "base_alpha_avhubert": 60,
 
@@ -40,7 +43,7 @@
 
     "dist_config": {
         "dist_backend": "nccl",
-        "dist_url": "tcp://localhost:55001",
+        "dist_url": "tcp://localhost:55000",
         "world_size": 1
     }
 }
