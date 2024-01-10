@@ -72,8 +72,11 @@ def initialize_val_terms(train_mode:str, classification:bool):
 
 def train(rank, a, h, avhubert_config):
     if rank == 0 and a.wandb:
-        proj_name = os.path.basename(os.path.abspath(a.checkpoint_path))
-        wandb.init(project=proj_name, sync_tensorboard=True)
+        full_path = os.path.abspath(a.checkpoint_path)
+        pardir = os.path.abspath(f'{full_path}/{os.pardir}')
+        proj_name = os.path.basename(pardir)
+        run_name = os.path.basename(full_path)
+        wandb.init(project=proj_name, name=run_name, sync_tensorboard=True)
     if h.num_gpus > 1:
         init_process_group(backend=h.dist_config['dist_backend'], init_method=h.dist_config['dist_url'],
                            world_size=h.dist_config['world_size'] * h.num_gpus, rank=rank)
