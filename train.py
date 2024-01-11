@@ -560,6 +560,7 @@ def train(rank, a, h, avhubert_config):
                     generator_out = generator(avhubert_source_batch["video"].to(device), prosody_target, unit_target, hu_target, ~mel_padding_mask)
                     y_g_avhubert_mel = generator_out["melspec_out"]
                     y_g_hat = None
+                    y_g_hat_vc = None
                     if a.train_mode == VIDEO2WAV_MODE:
                         y_g_hat = generator_out["wav_generated"].detach()
                         y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate,
