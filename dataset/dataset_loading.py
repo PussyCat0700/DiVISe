@@ -3,7 +3,7 @@ from argparse import Namespace
 from omegaconf import OmegaConf
 from avhubert import AVHubertPretrainingConfig, AVHubertConfig
 from dataset.avdatasets import AVHubertDataset
-from torch.utils.data import DistributedSampler, DataLoader
+from torch.utils.data import DistributedSampler, DataLoader, ConcatDataset
 from typing import List
 import logging
 
@@ -26,10 +26,13 @@ class AVHuBERTAdaptingCollater:
         self.dataset = dataset
     
     def __call__(self, samples):
-        batch = self.dataset.collater(samples=samples)
+        if isinstance(self.dataset, ConcatDataset):
+            batch = self.dataset.datasets[0].collater(samples=samples)
+        else:
+            batch = self.dataset.collater(samples=samples)
         return batch
 
-def get_dataloader(dataset:AVHubertDataset, batch_size, shuffle, num_workers, dist_sampler=False, pin_memory=True, seeder=None):
+def get_dataloader(dataset:AVHubertDataset, batch_size, shuffle, num_workers, dist_sampler=False, pin_memory=True, seeder=None, drop_last=True):
     if dist_sampler:
         sampler = DistributedSampler(dataset, shuffle=shuffle)
         shuffle = None  # sampler option is mutually exclusive with shuffle
@@ -40,7 +43,7 @@ def get_dataloader(dataset:AVHubertDataset, batch_size, shuffle, num_workers, di
                               sampler=sampler,
                               batch_size=batch_size,
                               pin_memory=pin_memory,
-                              drop_last=True,
+                              drop_last=drop_last,
                               collate_fn=collate_fn_adapter,
                               worker_init_fn=seeder)
     

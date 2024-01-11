@@ -210,6 +210,12 @@ class AVHubertDataset(FairseqDataset):
         audio_fn, audio_id = audio_fn.split(':')
         audio_id = audio_id.split('/')[-1]
         audio_base_dir = os.path.dirname(audio_fn)
+        name = {
+            "video":video_fn,
+            "audio":audio_fn,
+            "audio_id":audio_id,
+            "audio_basedir":audio_base_dir,
+        }
         if self.pitch_type == 'pyworld':
             pw_pitch_fn = os.path.join(audio_base_dir, f"{audio_id}_pw_dio.npy")
             pitch = np.load(pw_pitch_fn)
@@ -240,7 +246,7 @@ class AVHubertDataset(FairseqDataset):
                 wav_data = self.add_noise(wav_data)  # noise_prob is 0, don't worry.
         else:
             wav_data = None
-        return video_feats, wav_data, pitch, km_labels, hubert_hu
+        return video_feats, wav_data, pitch, km_labels, hubert_hu, name
 
     def load_video(self, audio_name):
         feats = custom_utils.load_video(os.path.join(self.audio_root, audio_name))
@@ -293,7 +299,7 @@ class AVHubertDataset(FairseqDataset):
         return mixed
 
     def __getitem__(self, index):
-        video_feats, wav_data, pitch_data, km_labels, hubert_hu = self.load_everything(index)
+        video_feats, wav_data, pitch_data, km_labels, hubert_hu, name = self.load_everything(index)
         wav_data, video_feats = torch.FloatTensor(wav_data) if wav_data is not None else None, torch.from_numpy(video_feats.astype(np.float32)) if video_feats is not None else None
         if pitch_data is not None:
             pitch_data = torch.FloatTensor(pitch_data)
@@ -304,7 +310,7 @@ class AVHubertDataset(FairseqDataset):
         labels = self.get_labels(index)
         fid = self.names[index][1].split(':')[1]
         return {"id": index, 'fid': fid, "video_source": video_feats, 'audio_source': wav_data, "label_list": labels,
-                "pitch_source": pitch_data, "km_source": km_labels, "hubert_source": hubert_hu,}
+                "pitch_source": pitch_data, "km_source": km_labels, "hubert_source": hubert_hu, "name":name,}
 
     def __len__(self):
         return len(self.sizes)
@@ -332,6 +338,7 @@ class AVHubertDataset(FairseqDataset):
         pitch_source = [s["pitch_source"] for s in samples]
         km_source = [s["km_source"] for s in samples]
         hu_source = [s["hubert_source"] for s in samples]
+        names = [s["name"] for s in samples]
         with_pitch = None not in pitch_source
         with_km = None not in km_source
         with_hu = None not in hu_source
@@ -400,7 +407,7 @@ class AVHubertDataset(FairseqDataset):
             for i in range(self.num_labels)
         ]
         targets_list, lengths_list, ntokens_list = self.collater_label_text(targets_by_label)
-        source = {"audio": collated_audios, "video": collated_videos, "pitch": collated_pitches, "km": collated_km, "hu": collated_hu,}
+        source = {"audio": collated_audios, "video": collated_videos, "pitch": collated_pitches, "km": collated_km, "hu": collated_hu, "name": names,}
         net_input = {"source": source,  # Definitely not None
                     "padding_mask_wav": padding_mask,  # Definitely not None
                     "padding_mask_mel": padding_mask_mel,  # Definitely not None

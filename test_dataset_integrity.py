@@ -47,6 +47,7 @@ if __name__ == '__main__':
         pbar = tqdm(dataloader)
         for batch in pbar:
             src = batch["net_input"]["source"]
+            pbar.set_description(f"Now at {src['name'][0]['audio']}")
             y_dict = mel_spectrogram_and_energy(src["audio"], h.n_fft, h.num_mels,
                                   h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax,
                                   center=False)
