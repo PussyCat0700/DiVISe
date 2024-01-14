@@ -42,6 +42,7 @@ def generate_mel(rank, a, h, avhubert_config):
         proj_name = os.path.basename(pardir)
         run_name = os.path.basename(full_path)
         wandb.init(project=proj_name, name=run_name, sync_tensorboard=True)
+        wandb.log({'processed_batch':0})
     if h.num_gpus > 1:
         init_process_group(backend=h.dist_config['dist_backend'], init_method=h.dist_config['dist_url'],
                            world_size=h.dist_config['world_size'] * h.num_gpus, rank=rank)
@@ -201,6 +202,8 @@ def generate_mel(rank, a, h, avhubert_config):
                 mel_save_path = os.path.join(audio_base_dir, f'{audio_id}_mel_{a.postfix}.npy')
                 np.save(mel_save_path, y_g_avhubert_mel)
             generated_batches += 1
+            if rank == 0 and a.wandb:
+                wandb.log({"processed_batch":generated_batches})
             pbar.set_description(f'{generated_batches=}')
             
 

@@ -49,7 +49,7 @@ def get_dataloader(dataset:AVHubertDataset, batch_size, shuffle, num_workers, di
     
     return loader, sampler
 
-def load_dataset(split: str, cfg:AVHubertPretrainingConfig, pitch_type=None, km_name=None, hu_name=None, fake_km_mask=False, km_pad_class_idx=None) -> None:
+def load_dataset(split: str, cfg:AVHubertPretrainingConfig, pitch_type=None, km_name=None, hu_name=None, fake_km_mask=False, km_pad_class_idx=None, max_keep_sample_size=500) -> None:
         manifest = f"{cfg.data}/{split}.tsv"
         paths = [
             f"{cfg.data}/{split}.{l}" for l in cfg.labels
@@ -67,7 +67,7 @@ def load_dataset(split: str, cfg:AVHubertPretrainingConfig, pitch_type=None, km_
             manifest,  #  a path list where you store your tsv files
             sample_rate=cfg.sample_rate,  # 16000 (constant)
             label_paths=paths,  # a path list where you store your dictionaries
-            max_keep_sample_size=500,  # This corresponds to a term read from tsv file preprocessed from AV-HuBERT pipeline
+            max_keep_sample_size=max_keep_sample_size,
             min_keep_sample_size=cfg.min_sample_size,  # None
             max_sample_seconds=max_sample_seconds,
             pitch_type=pitch_type,
