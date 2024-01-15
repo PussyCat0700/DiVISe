@@ -1,10 +1,16 @@
 {
     "resblock": "1",
     "num_gpus": 0,
-    "learning_rate": 0.0002,
-    "adam_b1": 0.8,
-    "adam_b2": 0.99,
-    "lr_decay": 0.999,
+    "batch_size": 10,
+    "learning_rate": 6e-5,
+    "adam_b1": 0.9,
+    "adam_b2": 0.98,
+    "total_updates":45000,
+    "revise_setting":true,
+    "frozen_steps":5000,
+    "t1_percent":10,
+    "t2_percent":20,
+    "last_lr_factor":0.05,
     "seed": 1234,
     "base_alpha_avhubert": 60,
 
@@ -30,6 +36,7 @@
     "valid_unit_name":"valid_cluster_label",
     "unit_method":"soft",
     "hubert_hidden":768,
+    "test_unit_name":"test_cluster_label",
     "k":2000,
     "unit_scale": 1.0,
 

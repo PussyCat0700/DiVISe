@@ -44,7 +44,11 @@ logging.getLogger(__name__)
 
 VIDEO2MEL_MODE = "v2m"
 VIDEO2WAV_MODE = "v2w"
-
+TEST_MODE = "test"
+VALID_MODE = "validation"
+metrics = {}
+best_metrics = None
+steps = 0
 def initialize_val_terms(train_mode:str, classification:bool):
     val_err_tot = {
         "mel_spec_error_avhubert": 0,
@@ -71,6 +75,7 @@ def initialize_val_terms(train_mode:str, classification:bool):
     return val_err_tot
 
 def train(rank, a, h, avhubert_config):
+    global metrics, best_metrics, steps
     if rank == 0 and a.wandb:
         full_path = os.path.abspath(a.checkpoint_path)
         pardir = os.path.abspath(f'{full_path}/{os.pardir}')
@@ -127,8 +132,6 @@ def train(rank, a, h, avhubert_config):
                                   ).to(device)
     mpd = MultiPeriodDiscriminator().to(device)
     msd = MultiScaleDiscriminator().to(device)
-    metrics = {}
-    best_metrics = None
 
     if rank == 0:
         logging.info('model loaded.')
@@ -139,7 +142,6 @@ def train(rank, a, h, avhubert_config):
         cp_g = scan_checkpoint(a.checkpoint_path, 'g_')
         cp_do = scan_checkpoint(a.checkpoint_path, 'do_')
 
-    steps = 0
     if a.avhubert_ckpt is not None:
         generator.load_pretrained_avhubertmodel(a.avhubert_ckpt, map_location=device)
     if a.hifigan_ckpt is not None:
@@ -235,6 +237,22 @@ def train(rank, a, h, avhubert_config):
                                             dist_sampler=h.num_gpus > 1, 
                                             pin_memory=not h.num_gpus > 1,
                                             shuffle=False)
+        if h.unit_name is not None and h.test_unit_name is not None:
+            # You can apply trained kmeans model on valid set to get km labels just for reference.
+            kwargs.update({
+                "km_name":h.test_unit_name,
+                })
+        else:
+            kwargs.update({
+                "fake_km_mask":True,
+            })
+        testset = load_dataset("test", avhubert_config["task"], **kwargs)
+        test_loader, _ = get_dataloader(testset, 
+                                        batch_size=h.batch_size,
+                                        num_workers=h.num_gpus, 
+                                        dist_sampler=h.num_gpus > 1, 
+                                        pin_memory=not h.num_gpus > 1,
+                                        shuffle=False)
 
         sw = SummaryWriter(os.path.join(a.checkpoint_path, 'logs'))
 
@@ -513,197 +531,241 @@ def train(rank, a, h, avhubert_config):
         # End of a train epoch
         # Validation
         if rank == 0:
-            generator.eval()
-            torch.cuda.empty_cache()
-            val_err_tot = initialize_val_terms(a.train_mode, h.unit_name is not None)
-                
-            with torch.no_grad():
-                transcriber = bundle.get_model().to(device)
-                valid_greedy_decoder = GreedyCTCDecoder(labels=bundle.get_labels())
-                pbar2 = tqdm(validation_loader, desc="Validation in progress...")
-                if h.unit_name is not None:
-                    num_classes, task, average = h.k+1, "multiclass", "macro"
-                    valid_acc = torchmetrics.Accuracy(task=task, num_classes=num_classes, average=average).to(device)
-                    valid_recall = torchmetrics.Recall(task=task, num_classes=num_classes, average=average).to(device)
-                    valid_precision = torchmetrics.Precision(task=task, num_classes=num_classes, average=average).to(device)
-                    valid_auc = torchmetrics.AUROC(task=task, num_classes=num_classes, average=average).to(device)
-                for j, batch in enumerate(pbar2):
-                    avhubert_source_batch = batch["net_input"]["source"]
-                    y = avhubert_source_batch["audio"].to(device)
-                    gt_texts = [x.strip() for x in batch["target"]]
-                    mel_padding_mask = batch["net_input"]["padding_mask_mel"].to(device)
-                    wav_padding_mask = batch["net_input"]["padding_mask_wav"].to(device)
-                    y_mel = mel_spectrogram(y, h.n_fft, h.num_mels,
-                                        h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax,
-                                        center=False)
-                    y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
-                    prosody_target = {
-                        "pitch_target":None,
-                        "energy_target":None,
-                    }
-                    unit_target = {
-                        "kmeans_target":None,
-                        "kmeans_mask":None,
-                    }
-                    hu_target = {
-                        "hubert_representation":None,
-                        "src_key_padding_mask":None,
-                    }
-                    if h.unit_name is not None or h.hu_repr_name is not None:
-                        kmeans_mask = batch["net_input"]["padding_mask_km"]
-                        if kmeans_mask is not None:
-                            kmeans_mask = kmeans_mask.to(device)
-                            if h.unit_name is not None:
-                                unit_target["kmeans_mask"] = ~kmeans_mask
-                            if h.hu_repr_name is not None:
-                                hu_target["src_key_padding_mask"] = kmeans_mask
-                    generator_out = generator(avhubert_source_batch["video"].to(device), prosody_target, unit_target, hu_target, ~mel_padding_mask)
-                    y_g_avhubert_mel = generator_out["melspec_out"]
-                    y_g_hat = None
-                    y_g_hat_vc = None
-                    if a.train_mode == VIDEO2WAV_MODE:
-                        y_g_hat = generator_out["wav_generated"].detach()
-                        y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate,
-                                                        h.hop_size, h.win_size,
-                                                        h.fmin, h.fmax_for_loss)
-                        val_err_tot["mel_spec_error_generator"] += F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_hat_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
-                    elif a.train_mode == VIDEO2MEL_MODE:
-                        if y_g_avhubert_mel is not None:
-                            y_g_hat = mel2wav_inverter(y_g_avhubert_mel.detach().transpose(-1, -2))
-                        if a.hifigan_ckpt is not None:
-                            y_g_hat_vc = generator_out["wav_generated"]
-                    if h.unit_name is not None and avhubert_source_batch["km"] is not None:
-                        with torch.inference_mode():
-                            if h.unit_method in [UNIT_HARD, UNIT_HIFIGAN_NO_GRAD]:
-                                if h.unit_method == UNIT_HARD:
-                                    preds_km = generator_out["unit"]["kmeans_pred"]
-                                elif h.unit_method == UNIT_HIFIGAN_NO_GRAD:
-                                    preds_km = generator_out["revise_logits"]
-                                    # preds_km = preds_km[..., :-1]  # rid of padding class idx... WON'T WORK?!
-                                preds_km = preds_km.transpose(2, 1)  # (B, C, T)
-                            elif h.unit_method == UNIT_SOFT:
-                                embedding_predictions = generator_out["unit"]["generated_softunit"]  # [B, T, hubert_hidden]
-                                embedding_targets = generator_out["unit"]["all_embedding"]  # [k, hubert_hidden]
-                                C = embedding_targets.shape[0]
-                                embedding_predictions = embedding_predictions.unsqueeze(0)  # [1, B, T, hubert_hidden]
-                                embedding_targets = embedding_targets.unsqueeze(1).unsqueeze(1)  # [k, 1, 1, hubert_hidden]
-                                sim_matrix = F.cosine_similarity(embedding_predictions, embedding_targets, dim=-1).softmax(dim=0)  # [k, B, T]
-                                preds_km = sim_matrix.permute(1, 0, 2)  # [B, k, T]
-                            targets_km = avhubert_source_batch["km"].to(device)
-                            acc = valid_acc(preds_km, targets_km).item()
-                            recall = valid_recall(preds_km, targets_km).item()
-                            precision = valid_precision(preds_km, targets_km).item()
-                            auc = valid_auc(preds_km, targets_km).item()
-                            val_err_tot["acc_hu_class"]+=acc
-                            val_err_tot["recall_hu_class"] += recall
-                            val_err_tot["precision_hu_class"] += precision
-                            val_err_tot["auc_hu_class"] += auc
-                    def eval_metrics(g_hat, postfix=None):
-                        n_batch = len(gt_texts)
-                        wer_name = "wer"
-                        stoi_name = "stoi"
-                        estoi_name = "estoi"
-                        pesq_name = "pesq"
-                        if postfix is not None:
-                            wer_name += f'_{postfix}'
-                            stoi_name += f'_{postfix}'
-                            estoi_name += f'_{postfix}'
-                            pesq_name += f'_{postfix}'
-                        with torch.inference_mode():
-                            lengths = (~wav_padding_mask).sum(dim=-1)  # (batch_size,)
-                            # model definition can be found in https://pytorch.org/audio/stable/_modules/torchaudio/models/wav2vec2/model.html
-                            emissions, lengths = transcriber(g_hat.squeeze(), lengths)  # length indicates the valid length in time axis of emissions
-                            for emission, gt_text, length in zip(emissions, gt_texts, lengths):
-                                generated_text = valid_greedy_decoder(emission, length)
-                                edit_dis = editdistance.eval(generated_text, gt_text)
-                                wer = edit_dis / len(gt_text)
-                                val_err_tot[wer_name] += wer / n_batch
-                            audio_metrics = compute_audio_metrics_torch(g_hat, y, 16000, ~wav_padding_mask)
-                            n_batch = len(audio_metrics)
-                            for audio_metric in audio_metrics:
-                                val_err_tot[stoi_name] += audio_metric["stoi"] / n_batch
-                                val_err_tot[estoi_name] += audio_metric["estoi"] / n_batch
-                                val_err_tot[pesq_name] += audio_metric["pesq"] / n_batch
+            val_args = {
+                "generator":generator,
+                "bundle":bundle,
+                "a":a,
+                "h":h,
+                "device":device,
+                "loader":validation_loader,
+                "epoch":epoch,
+                "mel2wav_inverter":mel2wav_inverter,
+                "mode":VALID_MODE,
+                "sw":sw,
+            }
+            validate(**val_args)
+            # checkpointing
+            # TODO: It is unreasonable to put training states in discriminator checkpoints but due to inherent design we keep it here.
+            def save_all_checkpoints(save_title, remove_title=None):
+                checkpoint_path = "{}/g_{}".format(a.checkpoint_path, save_title)
+                prev_checkpoint_path_g = "{}/g_{}".format(a.checkpoint_path, remove_title) if remove_title is not None else None
+                if a.train_mode == VIDEO2WAV_MODE:
+                    save_checkpoint(checkpoint_path,
+                                    {'generator': (generator.module if h.num_gpus > 1 else generator).state_dict()},
+                                    )
+                    checkpoint_path = "{}/do_{}".format(a.checkpoint_path, save_title)
+                    prev_checkpoint_path_do = "{}/do_{}".format(a.checkpoint_path, remove_title) if remove_title is not None else None
+                    save_checkpoint(checkpoint_path, 
+                                    {'mpd': (mpd.module if h.num_gpus > 1
+                                                        else mpd).state_dict(),
+                                    'msd': (msd.module if h.num_gpus > 1
+                                                        else msd).state_dict(),
+                                    'optim_g': optim_g.state_dict(), 'optim_d': optim_d.state_dict(), 'steps': steps,
+                                    'epoch': epoch, 'metrics': metrics,},
+                                    )
+                elif a.train_mode == VIDEO2MEL_MODE:
+                    # do_{} is not saved and every training state is kept in g_{}
+                    save_checkpoint(checkpoint_path,
+                                    {'generator': (generator.module if h.num_gpus > 1 else generator).state_dict(),
+                                    'optim_g': optim_g.state_dict(), 'steps': steps,
+                                    'epoch': epoch, 'metrics': metrics,},
+                                    )
+                    prev_checkpoint_path_do = None
+                for filepath_to_remove in [prev_checkpoint_path_do, prev_checkpoint_path_g]:
+                    if filepath_to_remove:
+                        if os.path.exists(filepath_to_remove):
+                            os.remove(filepath_to_remove)
+                            logging.info(f'removed {filepath_to_remove}')
+                        else:
+                            logging.warning(f'{filepath_to_remove} does not exist and removing is cancelled.')
+            save_all_checkpoints(epoch, remove_title=epoch-1 if epoch>0 else None)
+            if h.lower_the_better and metrics[h.save_on_metric] <= best_metrics[h.save_on_metric] \
+                or not h.lower_the_better and metrics[h.save_on_metric] >= best_metrics[h.save_on_metric]:
+                save_all_checkpoints("best")
+                best_metrics = metrics
+    # Ultimate test
+    if rank == 0:
+        test_args = {
+                "generator":generator,
+                "bundle":bundle,
+                "a":a,
+                "h":h,
+                "device":device,
+                "loader":test_loader,
+                "epoch":0,
+                "mel2wav_inverter":mel2wav_inverter,
+                "mode":TEST_MODE,
+                "sw":sw,
+            }
+        validate(**test_args)
+def validate(
+    generator:AVHuBERTGenerator,
+    bundle:torchaudio.pipelines.WAV2VEC2_ASR_BASE_960H,
+    a,
+    h,
+    device,
+    loader,
+    epoch,
+    mel2wav_inverter:MelSpectrogramInverter=None,
+    mode=VALID_MODE,
+    sw:SummaryWriter=None,
+    ):
+    generator.eval()
+    torch.cuda.empty_cache()
+    err_tot = initialize_val_terms(a.train_mode, h.unit_name is not None)
+        
+    with torch.no_grad():
+        transcriber = bundle.get_model().to(device)
+        valid_greedy_decoder = GreedyCTCDecoder(labels=bundle.get_labels())
+        pbar = tqdm(loader, desc="Validation in progress...")
+        if h.unit_name is not None:
+            num_classes, task, average = h.k+1, "multiclass", "macro"
+            valid_acc = torchmetrics.Accuracy(task=task, num_classes=num_classes, average=average).to(device)
+            valid_recall = torchmetrics.Recall(task=task, num_classes=num_classes, average=average).to(device)
+            valid_precision = torchmetrics.Precision(task=task, num_classes=num_classes, average=average).to(device)
+            valid_auc = torchmetrics.AUROC(task=task, num_classes=num_classes, average=average).to(device)
+        for j, batch in enumerate(pbar):
+            avhubert_source_batch = batch["net_input"]["source"]
+            y = avhubert_source_batch["audio"].to(device)
+            gt_texts = [x.strip() for x in batch["target"]]
+            mel_padding_mask = batch["net_input"]["padding_mask_mel"].to(device)
+            wav_padding_mask = batch["net_input"]["padding_mask_wav"].to(device)
+            y_mel = mel_spectrogram(y, h.n_fft, h.num_mels,
+                                h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax,
+                                center=False)
+            y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
+            prosody_target = {
+                "pitch_target":None,
+                "energy_target":None,
+            }
+            unit_target = {
+                "kmeans_target":None,
+                "kmeans_mask":None,
+            }
+            hu_target = {
+                "hubert_representation":None,
+                "src_key_padding_mask":None,
+            }
+            if h.unit_name is not None or h.hu_repr_name is not None:
+                kmeans_mask = batch["net_input"]["padding_mask_km"]
+                if kmeans_mask is not None:
+                    kmeans_mask = kmeans_mask.to(device)
+                    if h.unit_name is not None:
+                        unit_target["kmeans_mask"] = ~kmeans_mask
+                    if h.hu_repr_name is not None:
+                        hu_target["src_key_padding_mask"] = kmeans_mask
+            generator_out = generator(avhubert_source_batch["video"].to(device), prosody_target, unit_target, hu_target, ~mel_padding_mask)
+            y_g_avhubert_mel = generator_out["melspec_out"]
+            y_g_hat = None
+            y_g_hat_vc = None
+            if a.train_mode == VIDEO2WAV_MODE:
+                y_g_hat = generator_out["wav_generated"].detach()
+                y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate,
+                                                h.hop_size, h.win_size,
+                                                h.fmin, h.fmax_for_loss)
+                err_tot["mel_spec_error_generator"] += F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_hat_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
+            elif a.train_mode == VIDEO2MEL_MODE:
+                if y_g_avhubert_mel is not None:
+                    y_g_hat = mel2wav_inverter(y_g_avhubert_mel.detach().transpose(-1, -2))
+                if a.hifigan_ckpt is not None:
+                    y_g_hat_vc = generator_out["wav_generated"]
+            if h.unit_name is not None and avhubert_source_batch["km"] is not None:
+                with torch.inference_mode():
+                    if h.unit_method in [UNIT_HARD, UNIT_HIFIGAN_NO_GRAD]:
+                        if h.unit_method == UNIT_HARD:
+                            preds_km = generator_out["unit"]["kmeans_pred"]
+                        elif h.unit_method == UNIT_HIFIGAN_NO_GRAD:
+                            preds_km = generator_out["revise_logits"]
+                            # preds_km = preds_km[..., :-1]  # rid of padding class idx... WON'T WORK?!
+                        preds_km = preds_km.transpose(2, 1)  # (B, C, T)
+                    elif h.unit_method == UNIT_SOFT:
+                        embedding_predictions = generator_out["unit"]["generated_softunit"]  # [B, T, hubert_hidden]
+                        embedding_targets = generator_out["unit"]["all_embedding"]  # [k, hubert_hidden]
+                        C = embedding_targets.shape[0]
+                        embedding_predictions = embedding_predictions.unsqueeze(0)  # [1, B, T, hubert_hidden]
+                        embedding_targets = embedding_targets.unsqueeze(1).unsqueeze(1)  # [k, 1, 1, hubert_hidden]
+                        sim_matrix = F.cosine_similarity(embedding_predictions, embedding_targets, dim=-1).softmax(dim=0)  # [k, B, T]
+                        preds_km = sim_matrix.permute(1, 0, 2)  # [B, k, T]
+                    targets_km = avhubert_source_batch["km"].to(device)
+                    acc = valid_acc(preds_km, targets_km).item()
+                    recall = valid_recall(preds_km, targets_km).item()
+                    precision = valid_precision(preds_km, targets_km).item()
+                    auc = valid_auc(preds_km, targets_km).item()
+                    err_tot["acc_hu_class"]+=acc
+                    err_tot["recall_hu_class"] += recall
+                    err_tot["precision_hu_class"] += precision
+                    err_tot["auc_hu_class"] += auc
+            def eval_metrics(g_hat, postfix=None):
+                n_batch = len(gt_texts)
+                wer_name = "wer"
+                stoi_name = "stoi"
+                estoi_name = "estoi"
+                pesq_name = "pesq"
+                if postfix is not None:
+                    wer_name += f'_{postfix}'
+                    stoi_name += f'_{postfix}'
+                    estoi_name += f'_{postfix}'
+                    pesq_name += f'_{postfix}'
+                with torch.inference_mode():
+                    lengths = (~wav_padding_mask).sum(dim=-1)  # (batch_size,)
+                    # model definition can be found in https://pytorch.org/audio/stable/_modules/torchaudio/models/wav2vec2/model.html
+                    emissions, lengths = transcriber(g_hat.squeeze(), lengths)  # length indicates the valid length in time axis of emissions
+                    for emission, gt_text, length in zip(emissions, gt_texts, lengths):
+                        generated_text = valid_greedy_decoder(emission, length)
+                        edit_dis = editdistance.eval(generated_text, gt_text)
+                        wer = edit_dis / len(gt_text)
+                        err_tot[wer_name] += wer / n_batch
+                    audio_metrics = compute_audio_metrics_torch(g_hat, y, 16000, ~wav_padding_mask)
+                    n_batch = len(audio_metrics)
+                    for audio_metric in audio_metrics:
+                        err_tot[stoi_name] += audio_metric["stoi"] / n_batch
+                        err_tot[estoi_name] += audio_metric["estoi"] / n_batch
+                        err_tot[pesq_name] += audio_metric["pesq"] / n_batch
+            if y_g_hat is not None:
+                eval_metrics(y_g_hat)
+            if y_g_hat_vc is not None:
+                eval_metrics(y_g_hat_vc, "vocoder")
+            pbar.set_description(f'current wer={err_tot["wer_vocoder"]/(j+1)}(vc), {err_tot["wer"]/(j+1)}(gf)')
+            if y_g_avhubert_mel is not None:
+                err_tot["mel_spec_error_avhubert"] += F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_avhubert_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
+
+            if j <= 4:
+                # save first few validation samples
+                text = batch["target"]
+                if mode == VALID_MODE:
+                    gt_prefix = "gt"
+                    generated_prefix = "generated"
+                elif mode == TEST_MODE:
+                    gt_prefix = "gt(test)"
+                    generated_prefix = f"generated(test)"
+                if epoch == 0:
+                    # ground truth will only be saved once
+                    sw.add_audio(f'{gt_prefix}/y_{j}', y[0], steps, h.sampling_rate)
+                    sw.add_text(f'{gt_prefix}/y_text_{j}', text[0], steps)
+                    sw.add_figure(f'{gt_prefix}/y_spec_{j}', plot_spectrogram(y_mel[0].cpu()), steps)
+                if a.train_mode == VIDEO2WAV_MODE:
+                    sw.add_audio(f'{generated_prefix}/y_hat_{j}', y_g_hat[0], steps, h.sampling_rate)
+                    y_hat_spec = mel_spectrogram(y_g_hat[0], h.n_fft, h.num_mels,
+                                                    h.sampling_rate, h.hop_size, h.win_size,
+                                                    h.fmin, h.fmax)
+                    sw.add_figure(f'{generated_prefix}/y_hat_spec_{j}',
+                                    plot_spectrogram(y_hat_spec.squeeze(0).cpu().numpy()), steps)
+                elif a.train_mode == VIDEO2MEL_MODE:
                     if y_g_hat is not None:
-                        eval_metrics(y_g_hat)
+                        sw.add_audio(f'{generated_prefix}/y_hat_griffin_lim{j}', y_g_hat[0], steps, h.sampling_rate)
                     if y_g_hat_vc is not None:
-                        eval_metrics(y_g_hat_vc, "vocoder")
-                    pbar2.set_description(f'current wer={val_err_tot["wer_vocoder"]/(j+1)}(vc), {val_err_tot["wer"]/(j+1)}(gf)')
+                        sw.add_audio(f'{generated_prefix}/y_hat_vocoder{j}', y_g_hat_vc[0], steps, h.sampling_rate)
                     if y_g_avhubert_mel is not None:
-                        val_err_tot["mel_spec_error_avhubert"] += F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_avhubert_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
+                        sw.add_figure(f'{generated_prefix}/y_hat_vanilla_mel_{j}',
+                                        plot_spectrogram(y_g_avhubert_mel[0].squeeze(0).cpu().numpy()), steps)
 
-                    if j <= 4:
-                        # save first few validation samples
-                        text = batch["target"]
-                        if epoch == 0:
-                            # ground truth will only be saved once
-                            sw.add_audio('gt/y_{}'.format(j), y[0], steps, h.sampling_rate)
-                            sw.add_text('gt/y_text_{}'.format(j), text[0], steps)
-                            sw.add_figure('gt/y_spec_{}'.format(j), plot_spectrogram(y_mel[0].cpu()), steps)
-                        if a.train_mode == VIDEO2WAV_MODE:
-                            sw.add_audio(f'generated_ep{epoch}/y_hat_{j}', y_g_hat[0], steps, h.sampling_rate)
-                            y_hat_spec = mel_spectrogram(y_g_hat[0], h.n_fft, h.num_mels,
-                                                            h.sampling_rate, h.hop_size, h.win_size,
-                                                            h.fmin, h.fmax)
-                            sw.add_figure(f'generated_ep{epoch}/y_hat_spec_{j}',
-                                            plot_spectrogram(y_hat_spec.squeeze(0).cpu().numpy()), steps)
-                        elif a.train_mode == VIDEO2MEL_MODE:
-                            if y_g_hat is not None:
-                                sw.add_audio(f'generated_ep{epoch}/y_hat_griffin_lim{j}', y_g_hat[0], steps, h.sampling_rate)
-                            if y_g_hat_vc is not None:
-                                sw.add_audio(f'generated_ep{epoch}/y_hat_vocoder{j}', y_g_hat_vc[0], steps, h.sampling_rate)
-                            if y_g_avhubert_mel is not None:
-                                sw.add_figure(f'generated_ep{epoch}/y_hat_vanilla_mel_{j}',
-                                                plot_spectrogram(y_g_avhubert_mel[0].squeeze(0).cpu().numpy()), steps)
-
-                del transcriber, valid_greedy_decoder
-                for val_err_key, val_err_term in val_err_tot.items():
-                    val_err = val_err_term / (j+1)
-                    sw.add_scalar(f"validation/{val_err_key}", val_err, steps)
-                    metrics[val_err_key] = val_err
-                    if best_metrics is None:
-                        best_metrics = metrics
-                
-                # checkpointing
-                # TODO: It is unreasonable to put training states in discriminator checkpoints but due to inherent design we keep it here.
-                def save_all_checkpoints(save_title, remove_title=None):
-                    checkpoint_path = "{}/g_{}".format(a.checkpoint_path, save_title)
-                    prev_checkpoint_path_g = "{}/g_{}".format(a.checkpoint_path, remove_title) if remove_title is not None else None
-                    if a.train_mode == VIDEO2WAV_MODE:
-                        save_checkpoint(checkpoint_path,
-                                        {'generator': (generator.module if h.num_gpus > 1 else generator).state_dict()},
-                                        )
-                        checkpoint_path = "{}/do_{}".format(a.checkpoint_path, save_title)
-                        prev_checkpoint_path_do = "{}/do_{}".format(a.checkpoint_path, remove_title) if remove_title is not None else None
-                        save_checkpoint(checkpoint_path, 
-                                        {'mpd': (mpd.module if h.num_gpus > 1
-                                                            else mpd).state_dict(),
-                                        'msd': (msd.module if h.num_gpus > 1
-                                                            else msd).state_dict(),
-                                        'optim_g': optim_g.state_dict(), 'optim_d': optim_d.state_dict(), 'steps': steps,
-                                        'epoch': epoch, 'metrics': metrics,},
-                                        )
-                    elif a.train_mode == VIDEO2MEL_MODE:
-                        # do_{} is not saved and every training state is kept in g_{}
-                        save_checkpoint(checkpoint_path,
-                                        {'generator': (generator.module if h.num_gpus > 1 else generator).state_dict(),
-                                        'optim_g': optim_g.state_dict(), 'steps': steps,
-                                        'epoch': epoch, 'metrics': metrics,},
-                                        )
-                        prev_checkpoint_path_do = None
-                    for filepath_to_remove in [prev_checkpoint_path_do, prev_checkpoint_path_g]:
-                        if filepath_to_remove:
-                            if os.path.exists(filepath_to_remove):
-                                os.remove(filepath_to_remove)
-                                logging.info(f'removed {filepath_to_remove}')
-                            else:
-                                logging.warning(f'{filepath_to_remove} does not exist and removing is cancelled.')
-                save_all_checkpoints(epoch, remove_title=epoch-1 if epoch>0 else None)
-                if h.lower_the_better and metrics[h.save_on_metric] <= best_metrics[h.save_on_metric] \
-                    or not h.lower_the_better and metrics[h.save_on_metric] >= best_metrics[h.save_on_metric]:
-                    save_all_checkpoints("best")
-                    best_metrics = metrics
-
+        del transcriber, valid_greedy_decoder
+        for err_key, err_term in err_tot.items():
+            val_err = err_term / (j+1)
+            sw.add_scalar(f"{mode}/{err_key}", val_err, steps)
+            metrics[err_key] = val_err
+            if mode == VALID_MODE and best_metrics is None:
+                best_metrics = metrics
 
 def main():
     
