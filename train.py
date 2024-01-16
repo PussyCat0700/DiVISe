@@ -263,7 +263,9 @@ def train(rank, a, h, avhubert_config):
     mel2wav_inverter = MelSpectrogramInverter(h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax, device)
     mel2wav_inverter.eval()
     a.training_epochs = math.ceil(h.total_updates / h.num_gpus / len(train_loader))
-    actual_total_updates = a.training_epochs*len(train_loader)
+    actual_total_updates = math.ceil(h.total_updates / h.num_gpus)
+    part_updates = math.ceil(actual_total_updates / a.n_ckpts)
+    saving_updates = {x for x in range(part_updates, actual_total_updates+1, part_updates)}
     logging.info(f"{actual_total_updates=}")
     logging.info(f"{a.training_epochs=}")
     generator_module = generator.module if h.num_gpus > 1 else generator
@@ -522,6 +524,63 @@ def train(rank, a, h, avhubert_config):
                         generator_module.frontend_with_encoder.avhubert_grad(True)
                         if rank == 0:
                             sw.add_scalar(f"training/unfreeze_step", steps, steps)
+                # Validation&Checkpointing
+                if steps in saving_updates and rank == 0:
+                    val_args = {
+                        "generator":generator,
+                        "bundle":bundle,
+                        "a":a,
+                        "h":h,
+                        "device":device,
+                        "loader":validation_loader,
+                        "epoch":epoch,
+                        "mel2wav_inverter":mel2wav_inverter,
+                        "mode":VALID_MODE,
+                        "sw":sw,
+                    }
+                    validate(**val_args)
+                    # checkpointing
+                    # TODO: It is unreasonable to put training states in discriminator checkpoints but due to inherent design we keep it here.
+                    def save_all_checkpoints(save_title, remove_title=None):
+                        checkpoint_path = "{}/g_{}".format(a.checkpoint_path, save_title)
+                        prev_checkpoint_path_g = "{}/g_{}".format(a.checkpoint_path, remove_title) if remove_title is not None else None
+                        if a.train_mode == VIDEO2WAV_MODE:
+                            save_checkpoint(checkpoint_path,
+                                            {'generator': (generator.module if h.num_gpus > 1 else generator).state_dict()},
+                                            )
+                            checkpoint_path = "{}/do_{}".format(a.checkpoint_path, save_title)
+                            prev_checkpoint_path_do = "{}/do_{}".format(a.checkpoint_path, remove_title) if remove_title is not None else None
+                            save_checkpoint(checkpoint_path, 
+                                            {'mpd': (mpd.module if h.num_gpus > 1
+                                                                else mpd).state_dict(),
+                                            'msd': (msd.module if h.num_gpus > 1
+                                                                else msd).state_dict(),
+                                            'optim_g': optim_g.state_dict(), 'optim_d': optim_d.state_dict(), 'steps': steps,
+                                            'epoch': epoch, 'metrics': metrics,},
+                                            )
+                        elif a.train_mode == VIDEO2MEL_MODE:
+                            # do_{} is not saved and every training state is kept in g_{}
+                            save_checkpoint(checkpoint_path,
+                                            {'generator': (generator.module if h.num_gpus > 1 else generator).state_dict(),
+                                            'optim_g': optim_g.state_dict(), 'steps': steps,
+                                            'epoch': epoch, 'metrics': metrics,},
+                                            )
+                            prev_checkpoint_path_do = None
+                        for filepath_to_remove in [prev_checkpoint_path_do, prev_checkpoint_path_g]:
+                            if filepath_to_remove:
+                                if os.path.exists(filepath_to_remove):
+                                    os.remove(filepath_to_remove)
+                                    logging.info(f'removed {filepath_to_remove}')
+                                else:
+                                    logging.warning(f'{filepath_to_remove} does not exist and removing is cancelled.')
+                    save_all_checkpoints(steps, remove_title=steps-part_updates if steps-part_updates>0 else None)
+                    if (h.lower_the_better and metrics[h.save_on_metric] <= best_metrics[h.save_on_metric]) \
+                        or (not h.lower_the_better and metrics[h.save_on_metric] >= best_metrics[h.save_on_metric]):
+                        save_all_checkpoints("best")
+                        best_metrics = metrics
+                if steps == actual_total_updates:
+                    # Early breaking
+                    break
             if not h.revise_setting:
                 scheduler_g.step()
             if a.train_mode == VIDEO2WAV_MODE:  
@@ -530,60 +589,6 @@ def train(rank, a, h, avhubert_config):
             if rank == 0:
                 logging.info('Time taken for epoch {} is {} sec\n'.format(epoch + 1, int(time.time() - start)))
             # End of a train epoch
-            # Validation
-            if rank == 0:
-                val_args = {
-                    "generator":generator,
-                    "bundle":bundle,
-                    "a":a,
-                    "h":h,
-                    "device":device,
-                    "loader":validation_loader,
-                    "epoch":epoch,
-                    "mel2wav_inverter":mel2wav_inverter,
-                    "mode":VALID_MODE,
-                    "sw":sw,
-                }
-                validate(**val_args)
-                # checkpointing
-                # TODO: It is unreasonable to put training states in discriminator checkpoints but due to inherent design we keep it here.
-                def save_all_checkpoints(save_title, remove_title=None):
-                    checkpoint_path = "{}/g_{}".format(a.checkpoint_path, save_title)
-                    prev_checkpoint_path_g = "{}/g_{}".format(a.checkpoint_path, remove_title) if remove_title is not None else None
-                    if a.train_mode == VIDEO2WAV_MODE:
-                        save_checkpoint(checkpoint_path,
-                                        {'generator': (generator.module if h.num_gpus > 1 else generator).state_dict()},
-                                        )
-                        checkpoint_path = "{}/do_{}".format(a.checkpoint_path, save_title)
-                        prev_checkpoint_path_do = "{}/do_{}".format(a.checkpoint_path, remove_title) if remove_title is not None else None
-                        save_checkpoint(checkpoint_path, 
-                                        {'mpd': (mpd.module if h.num_gpus > 1
-                                                            else mpd).state_dict(),
-                                        'msd': (msd.module if h.num_gpus > 1
-                                                            else msd).state_dict(),
-                                        'optim_g': optim_g.state_dict(), 'optim_d': optim_d.state_dict(), 'steps': steps,
-                                        'epoch': epoch, 'metrics': metrics,},
-                                        )
-                    elif a.train_mode == VIDEO2MEL_MODE:
-                        # do_{} is not saved and every training state is kept in g_{}
-                        save_checkpoint(checkpoint_path,
-                                        {'generator': (generator.module if h.num_gpus > 1 else generator).state_dict(),
-                                        'optim_g': optim_g.state_dict(), 'steps': steps,
-                                        'epoch': epoch, 'metrics': metrics,},
-                                        )
-                        prev_checkpoint_path_do = None
-                    for filepath_to_remove in [prev_checkpoint_path_do, prev_checkpoint_path_g]:
-                        if filepath_to_remove:
-                            if os.path.exists(filepath_to_remove):
-                                os.remove(filepath_to_remove)
-                                logging.info(f'removed {filepath_to_remove}')
-                            else:
-                                logging.warning(f'{filepath_to_remove} does not exist and removing is cancelled.')
-                save_all_checkpoints(epoch, remove_title=epoch-1 if epoch>0 else None)
-                if h.lower_the_better and metrics[h.save_on_metric] <= best_metrics[h.save_on_metric] \
-                    or not h.lower_the_better and metrics[h.save_on_metric] >= best_metrics[h.save_on_metric]:
-                    save_all_checkpoints("best")
-                    best_metrics = metrics
     # Ultimate test
     if rank == 0:
         test_args = {
@@ -788,6 +793,7 @@ def main():
     parser.add_argument('--decay_melloss', action='store_true', help='(deprecated) if specified, will decay mel loss in first 1/5 of total epochs.')
     parser.add_argument('--train_mode', choices=[VIDEO2MEL_MODE, VIDEO2WAV_MODE], default=VIDEO2MEL_MODE, help='v2w(video2wav), v2m(video2mel)')
     parser.add_argument('--test', action='store_true', help='run test only')
+    parser.add_argument('--n_ckpts', type=int, default=10, help='number of checkpoints to be saved.')
 
     a = parser.parse_args()
     a.real_prosody = not a.predicted_prosody

@@ -40,7 +40,7 @@
     "unit_scale": 1.0,
 
     "save_on_metric": "acc_hu_class",
-    "lower_the_better": true,
+    "lower_the_better": false,
 
     "dist_config": {
         "dist_backend": "nccl",
