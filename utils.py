@@ -229,10 +229,14 @@ def save_checkpoint(filepath, obj):
     print("Complete.")
 
 
-def scan_checkpoint(cp_dir, prefix):
-    pattern = os.path.join(cp_dir, prefix + '[0-9]*')
-    cp_list = glob.glob(pattern)
-    if len(cp_list) == 0:
-        return None
-    return sorted(cp_list)[-1]
+def scan_checkpoint(cp_dir, prefix, load_best=False):
+    if load_best:
+        pattern = os.path.join(cp_dir, prefix + 'best')
+        return pattern
+    else:
+        pattern = os.path.join(cp_dir, prefix + '[0-9]*')
+        cp_list = glob.glob(pattern)
+        if len(cp_list) == 0:
+            return None
+        return sorted(cp_list)[-1]
 
