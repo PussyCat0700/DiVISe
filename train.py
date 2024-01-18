@@ -273,8 +273,11 @@ def train(rank, a, h, avhubert_config):
         scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=h.lr_decay, last_epoch=last_epoch)
     else:
         actual_frozen_updates = math.ceil(h.frozen_steps / h.num_gpus)
-        logging.info(f"AVHuBERT will be frozen for {actual_frozen_updates} updates.")
-        generator_module.frontend_with_encoder.avhubert_grad(False)
+        if steps <= actual_frozen_updates:
+            logging.info(f"AVHuBERT will be frozen for {actual_frozen_updates} updates.")
+            generator_module.frontend_with_encoder.avhubert_grad(False)
+        else:
+            logging.info(f"current {steps=}. AVHuBERT will not be frozen after {actual_frozen_updates} updates.")
         # Exactly as in ReVISE Tab. 17
         scheduler_g = TriStageLRScheduler(optim_g, actual_total_updates, h.t1_percent, h.t2_percent, last_lr_factor=h.last_lr_factor,last_epoch=steps-1)
     if a.train_mode == VIDEO2WAV_MODE:
