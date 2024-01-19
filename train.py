@@ -818,6 +818,9 @@ def main():
     h = AttrDict(json_config)
     if h.prosody_type is not None:
         assert h.norm_mode in ['original', 'meanvar'], f"{h.norm_mode=} which is not a valid way to normalize prosody."
+    if 'large' in a.avhubert_config:
+        h.total_updates*=8
+        h.frozen_steps*=8    
     if a.train_mode == VIDEO2MEL_MODE:
         # give random port to avoid collision
         url = h.dist_config['dist_url']

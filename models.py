@@ -139,12 +139,19 @@ class AVHuBERT2UnitHiFiGAN(nn.Module):
     def __init__(self, attention_dim, unit_nums) -> None:
         super().__init__()
         self.attention_dim = attention_dim
-        self.proj = nn.Linear(attention_dim*2, unit_nums+1)  # Last dim used for padding
+        # Define the transposed convolution layer
+        # Assuming the number of input channels is also 768, change it if it's different
+        self.transposed_conv = nn.ConvTranspose1d(in_channels=attention_dim*4, out_channels=unit_nums+1,
+                                                  kernel_size=4, stride=2, padding=1)
+        # Define the GeLU activation
+        self.gelu = nn.GELU()
     
     def forward(self, encoder_out):
-        # Original HiFi-GAN takes 100Hz mel spectrogram as input but we're doing 50Hz units here.
-        x = encoder_out.reshape(*encoder_out.shape[:-2], -1, self.attention_dim*2)
-        x = self.proj(x)
+        # encoder_out is (B, T, C)
+        # Apply transposed convolution
+        x = self.transposed_conv(encoder_out.transpose(-1, -2)).transpose(-1, -2)
+        # Apply GeLU activation
+        x = self.gelu(x)
         return x
         
     
