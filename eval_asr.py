@@ -2,7 +2,7 @@ import logging
 import random
 import sys
 import warnings
-import editdistance
+from jiwer import wer as compute_wer
 import torchaudio
 from tqdm import tqdm
 from audio.eval_utils import GreedyCTCDecoder
@@ -78,8 +78,7 @@ def generate_mel(rank, a, h, avhubert_config):
             n_batch = len(gt_texts)
             for emission, gt_text, length in zip(emissions, gt_texts, lengths):
                 generated_text = valid_greedy_decoder(emission, length)
-                edit_dis = editdistance.eval(generated_text, gt_text)
-                wer = edit_dis / len(gt_text)
+                wer = compute_wer(gt_text, generated_text)
                 err_tot["wer_asr"] += wer / n_batch
                 if rank == 0 and a.wandb:
                     wandb.log({"wer":wer / n_batch})
