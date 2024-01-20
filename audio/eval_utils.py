@@ -1,3 +1,4 @@
+import editdistance
 import numpy as np
 from pesq import pesq
 from pystoi import stoi
@@ -64,3 +65,41 @@ def _compute_audio_metrics(deg, ref, rate):
         "estoi": total_estoi,
     }
 
+class AudioEvaluater:
+    def __init__(self, transcriber, valid_greedy_decoder, err_tot, postfix=None) -> None:
+        self.transcriber = transcriber
+        self.valid_greedy_decoder = valid_greedy_decoder
+        self.postfix = postfix
+        self.err_tot = err_tot
+        self.n_audio_metrics = 0
+        self.wer_name = "wer"
+        self.stoi_name = "stoi"
+        self.estoi_name = "estoi"
+        self.pesq_name = "pesq"
+        self.n_err = 0
+        self.n_total = 0
+        if self.postfix is not None:
+            self.wer_name += f'_{self.postfix}'
+            self.stoi_name += f'_{self.postfix}'
+            self.estoi_name += f'_{self.postfix}'
+            self.pesq_name += f'_{self.postfix}'
+        # WER is computed with algorithmic averaging according to https://github.com/facebookresearch/av_hubert/blob/258fb50e155134eec2c4b49c2ae8de267075fd18/avhubert/infer_s2s.py#L254
+        self.err_tot['algorithmic'].update(self.wer_name)
+        
+    def eval_metrics(self, g_hat, y, wav_padding_mask, gt_texts):      
+        with torch.inference_mode():  
+            wav_lengths = (~wav_padding_mask).sum(dim=-1)  # (batch_size,)
+            # model definition can be found in https://pytorch.org/audio/stable/_modules/torchaudio/models/wav2vec2/model.html
+            emissions, lengths = self.transcriber(g_hat.squeeze(), wav_lengths)  # length indicates the valid length in time axis of emissions
+            for emission, gt_text, length in zip(emissions, gt_texts, lengths):
+                generated_text = self.valid_greedy_decoder(emission, length)
+                hypo, ref = generated_text.strip().split(), gt_text.strip().split()
+                self.n_err += editdistance.eval(hypo, ref)
+                self.n_total += len(ref)
+            self.err_tot[self.wer_name] = self.n_err / self.n_total
+            audio_metrics = compute_audio_metrics_torch(g_hat, y, 16000, ~wav_padding_mask)
+            n_batch = len(audio_metrics)
+            for audio_metric in audio_metrics:
+                self.err_tot[self.stoi_name] += audio_metric["stoi"] / n_batch
+                self.err_tot[self.estoi_name] += audio_metric["estoi"] / n_batch
+                self.err_tot[self.pesq_name] += audio_metric["pesq"] / n_batch

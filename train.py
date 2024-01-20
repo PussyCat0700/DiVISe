@@ -31,7 +31,7 @@ from models import AVHuBERTGenerator, MultiPeriodDiscriminator, MultiScaleDiscri
     discriminator_loss
 from utils import DataLoaderSeeder, TriStageLRScheduler, plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint, seed_everything
 from prosody_predictor.predictor import ProsodyPredictor
-from audio.eval_utils import GreedyCTCDecoder, compute_audio_metrics_torch
+from audio.eval_utils import AudioEvaluater, GreedyCTCDecoder
 
 torch.backends.cudnn.benchmark = True
 logging.basicConfig(
@@ -59,7 +59,8 @@ def initialize_val_terms(train_mode:str, classification:bool):
         "wer_vocoder":0,
         "stoi_vocoder":0,
         "estoi_vocoder":0,
-        "pesq_vocoder":0
+        "pesq_vocoder":0,
+        "algorithmic":set(),
     }
     if train_mode == VIDEO2WAV_MODE:
         val_err_tot.update({
@@ -627,6 +628,17 @@ def validate(
     with torch.no_grad():
         transcriber = bundle.get_model().to(device)
         valid_greedy_decoder = GreedyCTCDecoder(labels=bundle.get_labels())
+        audioeval_gf = AudioEvaluater(
+            transcriber=transcriber, 
+            valid_greedy_decoder=valid_greedy_decoder,
+            err_tot=err_tot,
+            )
+        audioeval_vocoder = AudioEvaluater(
+            transcriber=transcriber, 
+            valid_greedy_decoder=valid_greedy_decoder,
+            err_tot=err_tot,
+            postfix="vocoder"
+            )
         pbar = tqdm(loader, desc="Validation in progress...")
         if h.unit_name is not None:
             num_classes, task, average = h.k+1, "multiclass", "macro"
@@ -705,37 +717,11 @@ def validate(
                     err_tot["recall_hu_class"] += recall
                     err_tot["precision_hu_class"] += precision
                     err_tot["auc_hu_class"] += auc
-            def eval_metrics(g_hat, postfix=None):
-                n_batch = len(gt_texts)
-                wer_name = "wer"
-                stoi_name = "stoi"
-                estoi_name = "estoi"
-                pesq_name = "pesq"
-                if postfix is not None:
-                    wer_name += f'_{postfix}'
-                    stoi_name += f'_{postfix}'
-                    estoi_name += f'_{postfix}'
-                    pesq_name += f'_{postfix}'
-                with torch.inference_mode():
-                    lengths = (~wav_padding_mask).sum(dim=-1)  # (batch_size,)
-                    # model definition can be found in https://pytorch.org/audio/stable/_modules/torchaudio/models/wav2vec2/model.html
-                    emissions, lengths = transcriber(g_hat.squeeze(), lengths)  # length indicates the valid length in time axis of emissions
-                    for emission, gt_text, length in zip(emissions, gt_texts, lengths):
-                        generated_text = valid_greedy_decoder(emission, length)
-                        edit_dis = editdistance.eval(generated_text, gt_text)
-                        wer = edit_dis / len(gt_text)
-                        err_tot[wer_name] += wer / n_batch
-                    audio_metrics = compute_audio_metrics_torch(g_hat, y, 16000, ~wav_padding_mask)
-                    n_batch = len(audio_metrics)
-                    for audio_metric in audio_metrics:
-                        err_tot[stoi_name] += audio_metric["stoi"] / n_batch
-                        err_tot[estoi_name] += audio_metric["estoi"] / n_batch
-                        err_tot[pesq_name] += audio_metric["pesq"] / n_batch
             if y_g_hat is not None:
-                eval_metrics(y_g_hat)
+                audioeval_gf.eval_metrics(y_g_hat, y, wav_padding_mask, gt_texts)
             if y_g_hat_vc is not None:
-                eval_metrics(y_g_hat_vc, "vocoder")
-            pbar.set_description(f'current wer={err_tot["wer_vocoder"]/(j+1)}(vc), {err_tot["wer"]/(j+1)}(gf)')
+                audioeval_vocoder.eval_metrics(y_g_hat_vc, y, wav_padding_mask, gt_texts)
+            pbar.set_description(f'current wer={err_tot["wer_vocoder"]}(vc), {err_tot["wer"]}(gf)')
             if y_g_avhubert_mel is not None:
                 err_tot["mel_spec_error_avhubert"] += F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_avhubert_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
 
@@ -771,7 +757,10 @@ def validate(
 
         del transcriber, valid_greedy_decoder
         for err_key, err_term in err_tot.items():
-            val_err = err_term / (j+1)
+            if err_key == 'algorithmic':
+                continue
+            if err_key not in err_tot['algorithmic']:
+                val_err = err_term / (j+1)
             sw.add_scalar(f"{mode}/{err_key}", val_err, steps)
             metrics[err_key] = val_err
             if mode == VALID_MODE and best_metrics is None:
