@@ -84,7 +84,7 @@ class AudioEvaluater:
             self.estoi_name += f'_{self.postfix}'
             self.pesq_name += f'_{self.postfix}'
         # WER is computed with algorithmic averaging according to https://github.com/facebookresearch/av_hubert/blob/258fb50e155134eec2c4b49c2ae8de267075fd18/avhubert/infer_s2s.py#L254
-        self.err_tot['algorithmic'].update(self.wer_name)
+        self.err_tot['algorithmic'].add(self.wer_name)
         
     def eval_metrics(self, g_hat, y, wav_padding_mask, gt_texts):      
         with torch.inference_mode():  

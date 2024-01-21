@@ -760,9 +760,9 @@ def validate(
             if err_key == 'algorithmic':
                 continue
             if err_key not in err_tot['algorithmic']:
-                val_err = err_term / (j+1)
-            sw.add_scalar(f"{mode}/{err_key}", val_err, steps)
-            metrics[err_key] = val_err
+                err_term = err_term / (j+1)
+            sw.add_scalar(f"{mode}/{err_key}", err_term, steps)
+            metrics[err_key] = err_term
             if mode == VALID_MODE and best_metrics is None:
                 best_metrics = metrics
 
