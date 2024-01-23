@@ -31,7 +31,7 @@ from models import AVHuBERTGenerator, MultiPeriodDiscriminator, MultiScaleDiscri
     discriminator_loss
 from utils import DataLoaderSeeder, TriStageLRScheduler, plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint, seed_everything
 from prosody_predictor.predictor import ProsodyPredictor
-from audio.eval_utils import AudioEvaluater, GreedyCTCDecoder
+from audio.eval_utils import AudioEvaluater, BeamSearchDecoder, GreedyCTCDecoder
 
 torch.backends.cudnn.benchmark = True
 logging.basicConfig(
@@ -284,7 +284,7 @@ def train(rank, a, h, avhubert_config):
     if a.train_mode == VIDEO2WAV_MODE:
         scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=h.lr_decay, last_epoch=last_epoch)
     generator_module.frontend_with_encoder.update_steps(steps, actual_total_updates)
-    bundle = torchaudio.pipelines.WAV2VEC2_ASR_BASE_960H
+    bundle = torchaudio.pipelines.WAV2VEC2_ASR_LARGE_LV60K_960H
     if not a.test:
         for epoch in range(max(0, last_epoch), a.training_epochs):
             train_ratio = epoch / a.training_epochs  # [0, 1-1/a.training_epochs]
@@ -616,6 +616,7 @@ def validate(
     device,
     loader,
     epoch,
+    enable_lm_beamsearch=False,
     mel2wav_inverter:MelSpectrogramInverter=None,
     mode=VALID_MODE,
     sw:SummaryWriter=None,
@@ -627,7 +628,7 @@ def validate(
         
     with torch.no_grad():
         transcriber = bundle.get_model().to(device)
-        valid_greedy_decoder = GreedyCTCDecoder(labels=bundle.get_labels())
+        valid_greedy_decoder = BeamSearchDecoder() if enable_lm_beamsearch else GreedyCTCDecoder(labels=bundle.get_labels())
         audioeval_gf = AudioEvaluater(
             transcriber=transcriber, 
             valid_greedy_decoder=valid_greedy_decoder,

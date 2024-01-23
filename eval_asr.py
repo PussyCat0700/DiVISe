@@ -5,7 +5,7 @@ import warnings
 import editdistance
 import torchaudio
 from tqdm import tqdm
-from audio.eval_utils import GreedyCTCDecoder
+from audio.eval_utils import BeamSearchDecoder, GreedyCTCDecoder
 
 from dataset import load_avhubert_config, load_dataset, get_dataloader
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -59,12 +59,12 @@ def eval_asr(rank, a, h, avhubert_config):
                                     drop_last=False,
                                     )
     err_tot = {"wer_average":0.0, "wer_algorithmic":0.0}
-    bundle = torchaudio.pipelines.WAV2VEC2_ASR_BASE_960H
+    bundle = torchaudio.pipelines.WAV2VEC2_ASR_LARGE_LV60K_960H
     torch.cuda.empty_cache()
         
     with torch.no_grad():
         transcriber = bundle.get_model().to(device)
-        valid_greedy_decoder = GreedyCTCDecoder(labels=bundle.get_labels())
+        valid_greedy_decoder = BeamSearchDecoder()
         pbar = tqdm(data_loader, desc="Evaluating ASR...")
         n_err, n_total = 0, 0
         for j, batch in enumerate(pbar):
@@ -77,7 +77,8 @@ def eval_asr(rank, a, h, avhubert_config):
             emissions, lengths = transcriber(y, lengths)  # length indicates the valid length in time axis of emissions
             # reference for WER calculation: https://github.com/facebookresearch/av_hubert/blob/258fb50e155134eec2c4b49c2ae8de267075fd18/avhubert/infer_s2s.py#L254
             for emission, gt_text, length in zip(emissions, gt_texts, lengths):
-                generated_text = valid_greedy_decoder(emission, length)
+                beam_search_result = valid_greedy_decoder(emission, length)
+                generated_text = " ".join(beam_search_result[0][0].words).strip()
                 hypo, ref = generated_text.strip().split(), gt_text.strip().split()
                 n_err += editdistance.eval(hypo, ref)
                 n_total += len(ref)

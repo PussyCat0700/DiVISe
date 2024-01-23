@@ -3,9 +3,28 @@ import numpy as np
 from pesq import pesq
 from pystoi import stoi
 import torch
+from torchaudio.models.decoder import download_pretrained_files, ctc_decoder
 from cypesq import NoUtterancesError
 import logging
 logger = logging.Logger(__name__)
+
+class BeamSearchDecoder:
+    def __init__(self, pretrained="librispeech-4-gram", lm_weight=3.23, word_score=-0.26):
+        files = download_pretrained_files(pretrained)
+        beam_search_decoder = ctc_decoder(
+            lexicon=files.lexicon,
+            tokens=files.tokens,
+            lm=files.lm,
+            nbest=3,
+            beam_size=1500,
+            lm_weight=lm_weight,
+            word_score=word_score,
+        )
+        self.beam_search_decoder = beam_search_decoder
+    
+    def __call__(self, emission, lengths):
+        beam_search_result = self.beam_search_decoder(emission.cpu().unsqueeze(0), lengths.cpu().unsqueeze(0))
+        return beam_search_result
 
 class GreedyCTCDecoder(torch.nn.Module):
     def __init__(self, labels, blank=0):
@@ -69,6 +88,7 @@ class AudioEvaluater:
     def __init__(self, transcriber, valid_greedy_decoder, err_tot, postfix=None) -> None:
         self.transcriber = transcriber
         self.valid_greedy_decoder = valid_greedy_decoder
+        self.beamsearch = isinstance(self.valid_greedy_decoder, BeamSearchDecoder)
         self.postfix = postfix
         self.err_tot = err_tot
         self.n_audio_metrics = 0
@@ -92,7 +112,11 @@ class AudioEvaluater:
             # model definition can be found in https://pytorch.org/audio/stable/_modules/torchaudio/models/wav2vec2/model.html
             emissions, lengths = self.transcriber(g_hat.squeeze(), wav_lengths)  # length indicates the valid length in time axis of emissions
             for emission, gt_text, length in zip(emissions, gt_texts, lengths):
-                generated_text = self.valid_greedy_decoder(emission, length)
+                if self.beamsearch:
+                    beam_search_result = self.valid_greedy_decoder(emission, length)
+                    generated_text = " ".join(beam_search_result[0][0].words).strip()
+                else:
+                    generated_text = self.valid_greedy_decoder(emission, length)
                 hypo, ref = generated_text.strip().split(), gt_text.strip().split()
                 self.n_err += editdistance.eval(hypo, ref)
                 self.n_total += len(ref)
