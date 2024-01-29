@@ -29,7 +29,7 @@ from env import AttrDict, build_env
 from dataset.meldataset import MelSpectrogramInverter, mel_spectrogram, mel_spectrogram_and_energy
 from models import AVHuBERTGenerator, MultiPeriodDiscriminator, MultiScaleDiscriminator, feature_loss, generator_loss,\
     discriminator_loss
-from utils import DataLoaderSeeder, TriStageLRScheduler, plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint, seed_everything
+from utils import DataLoaderSeeder, TriStageLRScheduler, plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint, seed_everything, unwrap_module_discriminator, unwrap_module_generator
 from prosody_predictor.predictor import ProsodyPredictor
 from audio.eval_utils import AudioEvaluater, BeamSearchDecoder, GreedyCTCDecoder
 
@@ -145,21 +145,14 @@ def train(rank, a, h, avhubert_config):
 
     if a.avhubert_ckpt is not None:
         generator.load_pretrained_avhubertmodel(a.avhubert_ckpt, map_location=device)
-    if a.hifigan_ckpt is not None:
+    if a.hifigan_ckpt is not None and a.train_mode == VIDEO2WAV_MODE:
+        # hifigan ckpt might be updated in training with 2wav mode
         hifigan_weight = torch.load(a.hifigan_ckpt, map_location=device)
-        def unwrap_module_generator(weight, ignore_conv_pre:bool):
-            if ignore_conv_pre:
-                return {'.'.join(k.split('.')[1:]):v for k,v in weight.items() if 'conv_pre' not in k}
-            else:
-                return {'.'.join(k.split('.')[1:]):v for k,v in weight.items()}
-        def unwrap_module_discriminator(weight, name):
-            return {'.'.join(k.split('.')[2:]):v for k,v in weight.items() if name in k}
         generator.generator.load_state_dict(unwrap_module_generator(
             hifigan_weight["generator"]["model"], ignore_conv_pre=a.train_mode==VIDEO2WAV_MODE,
             ))
-        if a.train_mode == VIDEO2WAV_MODE:
-            mpd.load_state_dict(unwrap_module_discriminator(hifigan_weight["discriminator"]["model"], "mpd"))
-            msd.load_state_dict(unwrap_module_discriminator(hifigan_weight["discriminator"]["model"], "msd"))
+        mpd.load_state_dict(unwrap_module_discriminator(hifigan_weight["discriminator"]["model"], "mpd"))
+        msd.load_state_dict(unwrap_module_discriminator(hifigan_weight["discriminator"]["model"], "msd"))
     # TODO: It is really unreasonable to keep all training states in state_dict_do, and it is still here just for compatibility.
     if a.train_mode == VIDEO2WAV_MODE:
         if cp_g is None or cp_do is None:
@@ -184,6 +177,13 @@ def train(rank, a, h, avhubert_config):
             steps = state_dict_g['steps'] + 1
             last_epoch = state_dict_g['epoch']
             best_metrics = state_dict_g['metrics']
+            
+    if a.hifigan_ckpt is not None and a.train_mode == VIDEO2MEL_MODE:
+        # hifigan ckpt is not supposed to be updated in training with 2mel mode
+        hifigan_weight = torch.load(a.hifigan_ckpt, map_location=device)
+        generator.generator.load_state_dict(unwrap_module_generator(
+            hifigan_weight["generator"]["model"], ignore_conv_pre=a.train_mode==VIDEO2WAV_MODE,
+            ))
 
     if h.num_gpus > 1:
         generator = DistributedDataParallel(generator, device_ids=[rank], find_unused_parameters=True).to(device)

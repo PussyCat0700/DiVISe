@@ -214,6 +214,14 @@ def apply_weight_norm(m):
 def get_padding(kernel_size, dilation=1):
     return int((kernel_size*dilation - dilation)/2)
 
+def unwrap_module_generator(weight, ignore_conv_pre:bool):
+    if ignore_conv_pre:
+        return {'.'.join(k.split('.')[1:]):v for k,v in weight.items() if 'conv_pre' not in k}
+    else:
+        return {'.'.join(k.split('.')[1:]):v for k,v in weight.items()}
+
+def unwrap_module_discriminator(weight, name):
+    return {'.'.join(k.split('.')[2:]):v for k,v in weight.items() if name in k}
 
 def load_checkpoint(filepath, device):
     assert os.path.isfile(filepath)
