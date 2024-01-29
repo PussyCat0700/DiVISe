@@ -718,10 +718,11 @@ def validate(
                     err_tot["recall_hu_class"] += recall
                     err_tot["precision_hu_class"] += precision
                     err_tot["auc_hu_class"] += auc
+            text_gf, text_vc = None, None
             if y_g_hat is not None:
-                audioeval_gf.eval_metrics(y_g_hat, y, wav_padding_mask, gt_texts)
+                text_gf = audioeval_gf.eval_metrics(y_g_hat, y, wav_padding_mask, gt_texts)
             if y_g_hat_vc is not None:
-                audioeval_vocoder.eval_metrics(y_g_hat_vc, y, wav_padding_mask, gt_texts)
+                text_vc = audioeval_vocoder.eval_metrics(y_g_hat_vc, y, wav_padding_mask, gt_texts)
             pbar.set_description(f'current wer={err_tot["wer_vocoder"]}(vc), {err_tot["wer"]}(gf)')
             if y_g_avhubert_mel is not None:
                 err_tot["mel_spec_error_avhubert"] += F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_avhubert_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
@@ -739,6 +740,10 @@ def validate(
                     # ground truth will only be saved once
                     sw.add_audio(f'{gt_prefix}/y_{j}', y[0], steps, h.sampling_rate)
                     sw.add_text(f'{gt_prefix}/y_text_{j}', text[0], steps)
+                    if text_gf is not None:
+                        sw.add_text(f'{generated_prefix}/y_text_{j}', text_gf[0], steps)
+                    if text_vc is not None:
+                        sw.add_text(f'{generated_prefix}/y_text_{j}', text_vc[0], steps)
                     sw.add_figure(f'{gt_prefix}/y_spec_{j}', plot_spectrogram(y_mel[0].cpu()), steps)
                 if a.train_mode == VIDEO2WAV_MODE:
                     sw.add_audio(f'{generated_prefix}/y_hat_{j}', y_g_hat[0], steps, h.sampling_rate)

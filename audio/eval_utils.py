@@ -111,6 +111,7 @@ class AudioEvaluater:
             wav_lengths = (~wav_padding_mask).sum(dim=-1)  # (batch_size,)
             # model definition can be found in https://pytorch.org/audio/stable/_modules/torchaudio/models/wav2vec2/model.html
             emissions, lengths = self.transcriber(g_hat.squeeze(), wav_lengths)  # length indicates the valid length in time axis of emissions
+            hypoes = []
             for emission, gt_text, length in zip(emissions, gt_texts, lengths):
                 if self.beamsearch:
                     beam_search_result = self.valid_greedy_decoder(emission, length)
@@ -120,6 +121,7 @@ class AudioEvaluater:
                 hypo, ref = generated_text.strip().split(), gt_text.strip().split()
                 self.n_err += editdistance.eval(hypo, ref)
                 self.n_total += len(ref)
+                hypoes.append(' '.join(hypo))
             self.err_tot[self.wer_name] = self.n_err / self.n_total
             audio_metrics = compute_audio_metrics_torch(g_hat, y, 16000, ~wav_padding_mask)
             n_batch = len(audio_metrics)
@@ -127,3 +129,4 @@ class AudioEvaluater:
                 self.err_tot[self.stoi_name] += audio_metric["stoi"] / n_batch
                 self.err_tot[self.estoi_name] += audio_metric["estoi"] / n_batch
                 self.err_tot[self.pesq_name] += audio_metric["pesq"] / n_batch
+            return hypoes
