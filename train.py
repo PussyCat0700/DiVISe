@@ -6,7 +6,7 @@ import sys
 import warnings
 import numpy as np
 from omegaconf import OmegaConf
-import torchaudio
+from transformers import Wav2Vec2ForCTC
 import torchmetrics
 from tqdm import tqdm
 from constants import GRIFFINLIM, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD, UNIT_HARD, UNIT_HIFIGAN_NO_GRAD, UNIT_SOFT
@@ -31,7 +31,7 @@ from models import AVHuBERTGenerator, MultiPeriodDiscriminator, MultiScaleDiscri
     discriminator_loss
 from utils import DataLoaderSeeder, TriStageLRScheduler, plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint, seed_everything, unwrap_module_discriminator, unwrap_module_generator
 from prosody_predictor.predictor import ProsodyPredictor
-from audio.eval_utils import AudioEvaluater, BeamSearchDecoder, GreedyCTCDecoder
+from audio.eval_utils import AudioEvaluater, MyWav2Vec2Processor
 
 torch.backends.cudnn.benchmark = True
 logging.basicConfig(
@@ -247,6 +247,7 @@ def train(rank, a, h, avhubert_config):
             kwargs.update({
                 "fake_km_mask":True,
             })
+        avhubert_config["task"].max_sample_seconds = 10000 # Hacking: No Upper Limit
         testset = load_dataset("test", avhubert_config["task"], **kwargs)
         test_loader, _ = get_dataloader(testset, 
                                         batch_size=h.batch_size,
@@ -284,7 +285,8 @@ def train(rank, a, h, avhubert_config):
     if a.train_mode == VIDEO2WAV_MODE:
         scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=h.lr_decay, last_epoch=last_epoch)
     generator_module.frontend_with_encoder.update_steps(steps, actual_total_updates)
-    bundle = torchaudio.pipelines.WAV2VEC2_ASR_LARGE_LV60K_960H
+    w2v_model = Wav2Vec2ForCTC.from_pretrained("facebook/wav2vec2-large-960h-lv60-self").to(device)
+    w2v_processor = MyWav2Vec2Processor.from_pretrained("facebook/wav2vec2-large-960h-lv60-self")
     if not a.test:
         for epoch in range(max(0, last_epoch), a.training_epochs):
             train_ratio = epoch / a.training_epochs  # [0, 1-1/a.training_epochs]
@@ -532,7 +534,8 @@ def train(rank, a, h, avhubert_config):
                 if steps in saving_updates and rank == 0:
                     val_args = {
                         "generator":generator,
-                        "bundle":bundle,
+                        "w2v_processor":w2v_processor,
+                        "w2v_model":w2v_model,
                         "a":a,
                         "h":h,
                         "device":device,
@@ -597,7 +600,8 @@ def train(rank, a, h, avhubert_config):
     if rank == 0:
         test_args = {
                 "generator":generator,
-                "bundle":bundle,
+                "w2v_processor":w2v_processor,
+                "w2v_model":w2v_model,
                 "a":a,
                 "h":h,
                 "device":device,
@@ -610,13 +614,13 @@ def train(rank, a, h, avhubert_config):
         validate(**test_args)
 def validate(
     generator:AVHuBERTGenerator,
-    bundle:torchaudio.pipelines.WAV2VEC2_ASR_BASE_960H,
+    w2v_processor,
+    w2v_model,
     a,
     h,
     device,
     loader,
     epoch,
-    enable_lm_beamsearch=False,
     mel2wav_inverter:MelSpectrogramInverter=None,
     mode=VALID_MODE,
     sw:SummaryWriter=None,
@@ -627,16 +631,14 @@ def validate(
     err_tot = initialize_val_terms(a.train_mode, h.unit_name is not None)
         
     with torch.no_grad():
-        transcriber = bundle.get_model().to(device)
-        valid_greedy_decoder = BeamSearchDecoder() if enable_lm_beamsearch else GreedyCTCDecoder(labels=bundle.get_labels())
         audioeval_gf = AudioEvaluater(
-            transcriber=transcriber, 
-            valid_greedy_decoder=valid_greedy_decoder,
+            w2v_processor=w2v_processor, 
+            w2v_model=w2v_model,
             err_tot=err_tot,
             )
         audioeval_vocoder = AudioEvaluater(
-            transcriber=transcriber, 
-            valid_greedy_decoder=valid_greedy_decoder,
+            w2v_processor=w2v_processor, 
+            w2v_model=w2v_model,
             err_tot=err_tot,
             postfix="vocoder"
             )
@@ -761,7 +763,7 @@ def validate(
                         sw.add_figure(f'{generated_prefix}/y_hat_vanilla_mel_{j}',
                                         plot_spectrogram(y_g_avhubert_mel[0].squeeze(0).cpu().numpy()), steps)
 
-        del transcriber, valid_greedy_decoder
+        del w2v_model, w2v_processor
         for err_key, err_term in err_tot.items():
             if err_key == 'algorithmic':
                 continue

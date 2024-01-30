@@ -7,7 +7,7 @@ from torchaudio.models.decoder import download_pretrained_files, ctc_decoder
 from cypesq import NoUtterancesError
 import logging
 logger = logging.Logger(__name__)
-
+# Torchaudio utils
 class BeamSearchDecoder:
     def __init__(self, pretrained="librispeech-4-gram", lm_weight=3.23, word_score=-0.26):
         files = download_pretrained_files(pretrained)
@@ -47,7 +47,55 @@ class GreedyCTCDecoder(torch.nn.Module):
         indices = [i for i in indices if i != self.blank]
         raw_str = "".join([self.labels[i] for i in indices])
         return raw_str.replace("|", " ").lower().strip()
+# huggingface utils
+from typing import Union, List
+import numpy as np
+from transformers.feature_extraction_utils import BatchFeature
+from transformers import Wav2Vec2Processor
+class MyWav2Vec2Processor(Wav2Vec2Processor):
+    # Not using Huggingface's feature extractor
+    def __init__(self, feature_extractor, tokenizer):
+        super().__init__(feature_extractor, tokenizer)
+    
+    def __call__(
+        self,
+        padded_inputs, 
+        attention_mask,
+    ) -> BatchFeature:
+        padded_inputs = BatchFeature({"input_values": padded_inputs})
+        if attention_mask is not None:
+            padded_inputs["attention_mask"] = attention_mask
 
+        # zero-mean and unit-variance normalization
+        if self.feature_extractor.do_normalize:
+            lengths = attention_mask.sum(dim=-1)
+            padded_inputs["input_values"] = self.zero_mean_unit_var_norm(
+                padded_inputs["input_values"], lengths=lengths, padding_value=self.feature_extractor.padding_value
+            )
+
+        padded_inputs["input_values"] = torch.stack(padded_inputs["input_values"])
+        return padded_inputs
+    @staticmethod
+    def zero_mean_unit_var_norm(
+        input_values: torch.Tensor, lengths:List[int], padding_value: float = 0.0
+    ) -> List[torch.Tensor]:
+        """
+        Every array in the list is normalized to have zero mean and unit variance
+        """
+        if lengths is not None:
+            normed_input_values = []
+
+            for vector, length in zip(input_values, lengths):
+                normed_slice = (vector - vector[:length].mean()) / torch.sqrt(vector[:length].var() + 1e-7)
+                if length < normed_slice.shape[0]:
+                    normed_slice[length:] = padding_value
+
+                normed_input_values.append(normed_slice)
+        else:
+            normed_input_values = [(x - x.mean()) / torch.sqrt(x.var() + 1e-7) for x in input_values]
+
+        return normed_input_values
+# others
 def compute_audio_metrics_torch(degs:torch.Tensor, refs:torch.Tensor, rate:int, wav_padding_mask:torch.Tensor=None):
     degs = [x.masked_select(mask).cpu().numpy() for mask, x in zip(wav_padding_mask, degs.squeeze().detach())]
     refs = [x.masked_select(mask).cpu().numpy() for mask, x in zip(wav_padding_mask, refs.squeeze().detach())]
@@ -85,10 +133,9 @@ def _compute_audio_metrics(deg, ref, rate):
     }
 
 class AudioEvaluater:
-    def __init__(self, transcriber, valid_greedy_decoder, err_tot, postfix=None) -> None:
-        self.transcriber = transcriber
-        self.valid_greedy_decoder = valid_greedy_decoder
-        self.beamsearch = isinstance(self.valid_greedy_decoder, BeamSearchDecoder)
+    def __init__(self, w2v_processor:MyWav2Vec2Processor, w2v_model, err_tot, postfix=None) -> None:
+        self.w2v_processor = w2v_processor
+        self.w2v_model = w2v_model
         self.postfix = postfix
         self.err_tot = err_tot
         self.n_audio_metrics = 0
@@ -106,18 +153,27 @@ class AudioEvaluater:
         # WER is computed with algorithmic averaging according to https://github.com/facebookresearch/av_hubert/blob/258fb50e155134eec2c4b49c2ae8de267075fd18/avhubert/infer_s2s.py#L254
         self.err_tot['algorithmic'].add(self.wer_name)
         
+    def map_to_pred(self, y, wav_padding_mask):
+        device = y.device
+        inputs = self.w2v_processor(y, ~wav_padding_mask)
+        input_values = inputs.input_values.to(device)
+        attention_mask = inputs.attention_mask.to(device)
+        
+        with torch.no_grad():
+            logits = self.w2v_model(input_values, attention_mask=attention_mask).logits
+
+        predicted_ids = torch.argmax(logits, dim=-1)
+        transcription = self.w2v_processor.batch_decode(predicted_ids)
+        
+        return transcription
+        
     def eval_metrics(self, g_hat, y, wav_padding_mask, gt_texts):      
         with torch.inference_mode():  
-            wav_lengths = (~wav_padding_mask).sum(dim=-1)  # (batch_size,)
             # model definition can be found in https://pytorch.org/audio/stable/_modules/torchaudio/models/wav2vec2/model.html
-            emissions, lengths = self.transcriber(g_hat.squeeze(), wav_lengths)  # length indicates the valid length in time axis of emissions
+            generated_texts = self.map_to_pred(g_hat.squeeze(), wav_padding_mask)  # length indicates the valid length in time axis of emissions
             hypoes = []
-            for emission, gt_text, length in zip(emissions, gt_texts, lengths):
-                if self.beamsearch:
-                    beam_search_result = self.valid_greedy_decoder(emission, length)
-                    generated_text = " ".join(beam_search_result[0][0].words).strip()
-                else:
-                    generated_text = self.valid_greedy_decoder(emission, length)
+            for generated_text, gt_text in zip(generated_texts, gt_texts):
+                generated_text = generated_text.lower().strip()
                 hypo, ref = generated_text.strip().split(), gt_text.strip().split()
                 self.n_err += editdistance.eval(hypo, ref)
                 self.n_total += len(ref)

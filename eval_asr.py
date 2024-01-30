@@ -3,9 +3,9 @@ import random
 import sys
 import warnings
 import editdistance
-import torchaudio
+from transformers import Wav2Vec2ForCTC
 from tqdm import tqdm
-from audio.eval_utils import BeamSearchDecoder, GreedyCTCDecoder
+from audio.eval_utils import MyWav2Vec2Processor
 
 from dataset import load_avhubert_config, load_dataset, get_dataloader
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -59,12 +59,23 @@ def eval_asr(rank, a, h, avhubert_config):
                                     drop_last=False,
                                     )
     err_tot = {"wer_average":0.0, "wer_algorithmic":0.0}
-    bundle = torchaudio.pipelines.WAV2VEC2_ASR_LARGE_LV60K_960H
+    transcriber = Wav2Vec2ForCTC.from_pretrained("facebook/wav2vec2-large-960h-lv60-self").to(device)
+    transcriber_processor = MyWav2Vec2Processor.from_pretrained("facebook/wav2vec2-large-960h-lv60-self")
     torch.cuda.empty_cache()
+    def map_to_pred(y, wav_padding_mask):
+        inputs = transcriber_processor(y, ~wav_padding_mask)
+        input_values = inputs.input_values.to(device)
+        attention_mask = inputs.attention_mask.to(device)
+        
+        with torch.no_grad():
+            logits = transcriber(input_values, attention_mask=attention_mask).logits
+
+        predicted_ids = torch.argmax(logits, dim=-1)
+        transcription = transcriber_processor.batch_decode(predicted_ids)
+        
+        return transcription
         
     with torch.no_grad():
-        transcriber = bundle.get_model().to(device)
-        valid_greedy_decoder = BeamSearchDecoder()
         pbar = tqdm(data_loader, desc="Evaluating ASR...")
         n_err, n_total = 0, 0
         for j, batch in enumerate(pbar):
@@ -72,13 +83,10 @@ def eval_asr(rank, a, h, avhubert_config):
             y = avhubert_source_batch["audio"].to(device)
             gt_texts = [x.strip() for x in batch["target"]]
             wav_padding_mask = batch["net_input"]["padding_mask_wav"].to(device)
-            lengths = (~wav_padding_mask).sum(dim=-1)
-            # model definition can be found in https://pytorch.org/audio/stable/_modules/torchaudio/models/wav2vec2/model.html
-            emissions, lengths = transcriber(y, lengths)  # length indicates the valid length in time axis of emissions
+            generated_texts = map_to_pred(y, wav_padding_mask)
             # reference for WER calculation: https://github.com/facebookresearch/av_hubert/blob/258fb50e155134eec2c4b49c2ae8de267075fd18/avhubert/infer_s2s.py#L254
-            for emission, gt_text, length in zip(emissions, gt_texts, lengths):
-                beam_search_result = valid_greedy_decoder(emission, length)
-                generated_text = " ".join(beam_search_result[0][0].words).strip()
+            for generated_text, gt_text in zip(generated_texts, gt_texts):
+                generated_text = generated_text.lower().strip()
                 hypo, ref = generated_text.strip().split(), gt_text.strip().split()
                 n_err += editdistance.eval(hypo, ref)
                 n_total += len(ref)
