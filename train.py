@@ -82,6 +82,8 @@ def train(rank, a, h, avhubert_config):
         pardir = os.path.abspath(f'{full_path}/{os.pardir}')
         proj_name = os.path.basename(pardir)
         run_name = os.path.basename(full_path)
+        if a.test:
+            run_name += '-test'
         wandb.init(project=proj_name, name=run_name, sync_tensorboard=True)
     if h.num_gpus > 1:
         init_process_group(backend=h.dist_config['dist_backend'], init_method=h.dist_config['dist_url'],
