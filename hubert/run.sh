@@ -3,10 +3,15 @@
 set -e
 start_step=${1:-1}
 echo "doing steps from step ${start_step}"
+skip_clustering=false
+if [ "$2" = "-simple" ]; then
+    echo "clustering will be skipped"
+    skip_clustering=true
+fi
 
-tsv_dir="YOUR_PATH_TO_LRS3(Processed)/433h_data/"
-cluster_name="cluster_label_large"
-fairseq_kmeans_path="YOUR_PATH_TO_FAIRSEQ/fairseq/examples/hubert/simple_kmeans"
+tsv_dir="/home/yfliu/datasets/lrs3/30h_data/"
+cluster_name="cluster_label"
+fairseq_kmeans_path="/home/yfliu/av_hubert/fairseq/examples/hubert/simple_kmeans"
 splits=('train' 'valid' 'test')
 if [ "$start_step" -le 1 ]; then
     for split in ${splits[@]}; do
@@ -14,8 +19,8 @@ if [ "$start_step" -le 1 ]; then
     done
     echo "tsv generated"
 fi
-ckpt_path=YOUR_PATH_TO_HUBERT_CKPT
-km_path=$tsv_dir/YOUR_KMEANS_MODEL.kmmodel
+ckpt_path=/home/yfliu/hifi-gan/hubert/hubert_base_ls960.pt
+km_path=/home/yfliu/datasets/lrs3/433h_data/ls960base.kmmodel
 n_cluster=2000
 layer=12
 nshard=1
@@ -31,7 +36,7 @@ if [ "$start_step" -le 2 ]; then
     done
 fi
 
-if [ "$start_step" -le 3 ]; then
+if [ "$start_step" -le 3 ] && ! $skip_clustering; then
     echo "doing clustering"
     python learn_kmeans.py ${feat_dir} train_${cluster_name} ${nshard} ${km_path} ${n_cluster} --percent 0.1
 fi
