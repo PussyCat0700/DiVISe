@@ -817,7 +817,8 @@ def main():
     h = AttrDict(json_config)
     if h.prosody_type is not None:
         assert h.norm_mode in ['original', 'meanvar'], f"{h.norm_mode=} which is not a valid way to normalize prosody."
-    if 'large' in a.avhubert_config:
+    avhubert_config = load_avhubert_config(a.avhubert_config)
+    if '433h_data' in avhubert_config["task"].data:
         h.total_updates*=8
         h.frozen_steps*=8    
     if a.train_mode == VIDEO2MEL_MODE:
@@ -835,8 +836,6 @@ def main():
     if h.save_on_metric not in val_term_for_test.keys():
         raise RuntimeError(f"metric {h.save_on_metric} does not exist but is specified as save_on_metric in {a.hifigan_config}")
     build_env(a.hifigan_config, 'hifigan_config.json', a.checkpoint_path)
-    
-    avhubert_config = load_avhubert_config(a.avhubert_config)
     OmegaConf.save(avhubert_config, os.path.join(a.checkpoint_path, 'avhubert_config.yaml'))
 
     torch.manual_seed(h.seed)
