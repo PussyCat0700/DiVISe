@@ -631,7 +631,15 @@ def validate(
     generator.eval()
     torch.cuda.empty_cache()
     err_tot = initialize_val_terms(a.train_mode, h.unit_name is not None)
-        
+    if mode == VALID_MODE:
+        gt_prefix = "gt"
+        generated_prefix = "generated"
+    elif mode == TEST_MODE:
+        gt_prefix = "gt(test)"
+        generated_prefix = f"generated(test)"
+    f_gt = open(os.path.join(a.checkpoint_path, f'{gt_prefix}.txt'), 'w+')
+    f_gf = open(os.path.join(a.checkpoint_path, f'{generated_prefix}_gf.txt'), 'w+')
+    f_vc = open(os.path.join(a.checkpoint_path, f'{generated_prefix}_vc.txt'), 'w+')   
     with torch.no_grad():
         audioeval_gf = AudioEvaluater(
             w2v_processor=w2v_processor, 
@@ -730,16 +738,17 @@ def validate(
             pbar.set_description(f'current wer={err_tot["wer_vocoder"]}(vc), {err_tot["wer"]}(gf)')
             if y_g_avhubert_mel is not None:
                 err_tot["mel_spec_error_avhubert"] += F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_avhubert_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
-
+            if text_gf is not None:
+                for line in text_gf:
+                    f_gf.write(line+'\n')
+            if text_vc is not None:
+                for line in text_vc:
+                    f_vc.write(line+'\n')
+            text = batch["target"]
+            for line in text:
+                f_gt.write(line)
             if j <= 4:
-                # save first few validation samples
-                text = batch["target"]
-                if mode == VALID_MODE:
-                    gt_prefix = "gt"
-                    generated_prefix = "generated"
-                elif mode == TEST_MODE:
-                    gt_prefix = "gt(test)"
-                    generated_prefix = f"generated(test)"
+                # save first few validation sample
                 if epoch == 0:
                     # ground truth will only be saved once
                     sw.add_audio(f'{gt_prefix}/y_{j}', y[0], steps, h.sampling_rate)
