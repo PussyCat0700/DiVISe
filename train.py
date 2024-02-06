@@ -236,9 +236,8 @@ def train(rank, a, h, avhubert_config):
         validset = load_dataset("valid", avhubert_config["task"], **kwargs)
         validation_loader, _ = get_dataloader(validset, 
                                             batch_size=h.batch_size,
-                                            num_workers=h.num_gpus, 
-                                            dist_sampler=h.num_gpus > 1, 
-                                            pin_memory=not h.num_gpus > 1,
+                                            num_workers=1, 
+                                            drop_last=False,
                                             shuffle=False)
         if h.unit_name is not None and h.test_unit_name is not None:
             # You can apply trained kmeans model on valid set to get km labels just for reference.
@@ -253,9 +252,8 @@ def train(rank, a, h, avhubert_config):
         testset = load_dataset("test", avhubert_config["task"], **kwargs)
         test_loader, _ = get_dataloader(testset, 
                                         batch_size=h.batch_size,
-                                        num_workers=h.num_gpus, 
-                                        dist_sampler=h.num_gpus > 1, 
-                                        pin_memory=not h.num_gpus > 1,
+                                        num_workers=1, 
+                                        drop_last=False,
                                         shuffle=False)
 
         sw = SummaryWriter(os.path.join(a.checkpoint_path, 'logs'))

@@ -170,7 +170,9 @@ class AudioEvaluater:
     def eval_metrics(self, g_hat, y, wav_padding_mask, gt_texts):      
         with torch.inference_mode():  
             # model definition can be found in https://pytorch.org/audio/stable/_modules/torchaudio/models/wav2vec2/model.html
-            generated_texts = self.map_to_pred(g_hat.squeeze(), wav_padding_mask)  # length indicates the valid length in time axis of emissions
+            if len(g_hat.shape) > 2:
+                g_hat = g_hat.squeeze(1)
+            generated_texts = self.map_to_pred(g_hat, wav_padding_mask)  # length indicates the valid length in time axis of emissions
             hypoes = []
             for generated_text, gt_text in zip(generated_texts, gt_texts):
                 generated_text = generated_text.lower().strip()
