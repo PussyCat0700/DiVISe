@@ -15,6 +15,7 @@ if __name__ == '__main__':
     parser.add_argument("--pitch_type")
     parser.add_argument("--km")
     parser.add_argument("--hu_name")
+    parser.add_argument("--st_name")
     args = parser.parse_args()
     avhubert_config = load_avhubert_config(args.avhubert_config)
     with open(args.hifigan_config) as f:
@@ -24,17 +25,17 @@ if __name__ == '__main__':
     sets = {}
     for split in ["valid", "train"]:
         sets[split] = {}
-        kwargs = {}
-        if "train" == split:
-            kwargs.update({
-                "pitch_type":args.pitch_type,
-                "km_name":args.km,
-                "hu_name":args.hu_name
-            })
-        else:
-            kwargs.update({
-                "fake_km_mask":True
-            })
+        kwargs = {
+            "pitch_type":args.pitch_type,
+            "km_name":args.km,
+            "hu_name":args.hu_name,
+            "st_name":f"{split}_{args.st_name}",
+        }
+        if "train" != split:
+            # kwargs.update({
+            #     "fake_km_mask":True
+            # })
+            avhubert_config["task"].max_sample_seconds = 10000 # Hacking: No Upper Limit
         sets[split]["dataset"] = load_dataset(split, avhubert_config["task"], **kwargs)
         sets[split]["dataloader"], sets[split]["sampler"] = get_dataloader(sets[split]["dataset"], 
             batch_size=8,
@@ -58,4 +59,6 @@ if __name__ == '__main__':
                 assert src["km"].shape[-1] == src["video"].shape[2] * 2, f'{src["video"].shape[2]=} but {src["km"].shape[-1]=}'
             if src["hu"] is not None:
                 assert src["hu"].shape[1] == src["video"].shape[2] * 2, f'{src["video"].shape[2]=} but {src["hu"].shape[1]=}'
+            if src["st"] is not None:
+                assert src["st"].shape[-1] == src["video"].shape[2] * 2, f'{src["video"].shape[2]=} but {src["st"].shape[-1]=}'
     logging.info("check successful")

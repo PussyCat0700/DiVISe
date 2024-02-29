@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import itertools
+import json
 import logging
 import os
 import pdb
@@ -88,6 +89,14 @@ def load_km_labels(km_path, inds, tot):
         km_labels = [km_labels[i] for i in inds]
     return km_labels
 
+def load_speech_tokens(st_path, inds, tot):
+    with open(st_path, 'r') as f:
+        speech_tokens = f.readlines()
+        assert len(speech_tokens) == tot, f"{len(speech_tokens)=} does not match lines in tsv files({tot})." \
+                    "Please check if they are on the same split."
+        speech_tokens = [speech_tokens[i] for i in inds]
+    return speech_tokens
+
 class AVHubertDataset(FairseqDataset):
     def __init__(
             self,
@@ -99,6 +108,7 @@ class AVHubertDataset(FairseqDataset):
             max_sample_seconds: Optional[float] = None,
             pitch_type: Optional[str] = None,  # Should be pyworld or kaldi
             km_path: Optional[str] = None,  # Should be path to your .km file
+            st_path: Optional[str] = None,  # Should be path to your .st file
             km_pad_class: Optional[int] = None,  # This will be neccessary in end-to-end training
             hu_name: Optional[str] = None,  # Should be {kmeans_split} in hubertrep_export.py 
             fake_km_mask: bool = False,  # provide km padding mask even on a set without km labels.
@@ -150,6 +160,8 @@ class AVHubertDataset(FairseqDataset):
             self.km_labels = load_km_labels(km_path, inds, tot)
         else:
             self.km_labels = None
+        # speech tokens are stored in a single text-format file so it must be preloaded into running memory.
+        self.speech_tokens = load_speech_tokens(st_path, inds, tot) if st_path else None
         if image_aug:
             self.transform = custom_utils.Compose([
                 custom_utils.Normalize( 0.0,255.0 ),
@@ -228,6 +240,9 @@ class AVHubertDataset(FairseqDataset):
             km_labels = [int(x) for x in self.km_labels[index].strip().split(' ')]  # 50 Hz
         else:
             km_labels = None
+        speech_tokens = None
+        if self.speech_tokens is not None:
+            speech_tokens = json.loads(self.speech_tokens[index])
         if self.hu_name is not None:
             load_path = os.path.join(audio_base_dir, f"{audio_id}_{self.hu_name}.npy")
             hubert_hu = np.load(load_path)
@@ -246,7 +261,7 @@ class AVHubertDataset(FairseqDataset):
                 wav_data = self.add_noise(wav_data)  # noise_prob is 0, don't worry.
         else:
             wav_data = None
-        return video_feats, wav_data, pitch, km_labels, hubert_hu, name
+        return video_feats, wav_data, pitch, km_labels, hubert_hu, speech_tokens, name
 
     def load_video(self, audio_name):
         feats = custom_utils.load_video(os.path.join(self.audio_root, audio_name))
@@ -299,7 +314,7 @@ class AVHubertDataset(FairseqDataset):
         return mixed
 
     def __getitem__(self, index):
-        video_feats, wav_data, pitch_data, km_labels, hubert_hu, name = self.load_everything(index)
+        video_feats, wav_data, pitch_data, km_labels, hubert_hu, speech_tokens, name = self.load_everything(index)
         wav_data, video_feats = torch.FloatTensor(wav_data) if wav_data is not None else None, torch.from_numpy(video_feats.astype(np.float32)) if video_feats is not None else None
         if pitch_data is not None:
             pitch_data = torch.FloatTensor(pitch_data)
@@ -307,10 +322,13 @@ class AVHubertDataset(FairseqDataset):
             km_labels = torch.LongTensor(km_labels)
         if hubert_hu is not None:
             hubert_hu = torch.Tensor(hubert_hu)
+        if speech_tokens is not None:
+            speech_tokens = torch.LongTensor(speech_tokens)
+            speech_tokens = speech_tokens.transpose(-1, -2)  # item of shape [T, 8]
         labels = self.get_labels(index)
         fid = self.names[index][1].split(':')[1]
         return {"id": index, 'fid': fid, "video_source": video_feats, 'audio_source': wav_data, "label_list": labels,
-                "pitch_source": pitch_data, "km_source": km_labels, "hubert_source": hubert_hu, "name":name,}
+                "pitch_source": pitch_data, "km_source": km_labels, "hubert_source": hubert_hu, "speech_tokens":speech_tokens, "name":name,}
 
     def __len__(self):
         return len(self.sizes)
@@ -337,11 +355,13 @@ class AVHubertDataset(FairseqDataset):
         audio_source, video_source = [s["audio_source"] for s in samples], [s["video_source"] for s in samples]
         pitch_source = [s["pitch_source"] for s in samples]
         km_source = [s["km_source"] for s in samples]
+        speech_tokens = [s["speech_tokens"] for s in samples]
         hu_source = [s["hubert_source"] for s in samples]
         names = [s["name"] for s in samples]
         with_pitch = None not in pitch_source
         with_km = None not in km_source
         with_hu = None not in hu_source
+        with_speech_tokens = None not in speech_tokens
         if audio_source[0] is None:
             audio_source = None
         if video_source[0] is None:
@@ -354,6 +374,10 @@ class AVHubertDataset(FairseqDataset):
                 km_sizes = [len(s) for s in km_source]
             if with_hu:
                 km_sizes = [len(s) for s in hu_source]
+            if with_speech_tokens:
+                # Note that speech tokens are not derived from Kmeans
+                # We're just borrowing the name km_size because they're both of lengths computed on 50Hz.
+                km_sizes = [s.shape[-1] for s in speech_tokens]
         if video_source is not None:
             video_sizes = [len(s) for s in video_source]
         if audio_source is not None and video_source is not None:
@@ -361,7 +385,7 @@ class AVHubertDataset(FairseqDataset):
             audio_sizes = [video_size*self.video2mel_magnitude*self.hop_size_mel for video_size in video_sizes]
             if with_pitch:
                 pitch_sizes = [video_size*self.video2mel_magnitude for video_size in video_sizes]
-            if with_km or with_hu:
+            if with_km or with_hu or with_speech_tokens:
                 km_sizes = [video_size*2 for video_size in video_sizes]  #  only works when video is 25 Hz -> 50 Hz in HuBERT
         if self.pad_audio:
             func = lambda curr_x, max_sample_x: min(max(curr_x), max_sample_x)
@@ -379,12 +403,15 @@ class AVHubertDataset(FairseqDataset):
                 pitch_size = func(pitch_sizes, self.max_pitch_sample_size)
                 pitch_starts = [int(second_start*self.sr_pitch) for second_start in second_starts]
                 collated_pitches, _, pitch_starts = self.collater_wav(pitch_source, pitch_size, pitch_starts)
-            if with_km or with_hu:
+            if with_km or with_hu or with_speech_tokens:
                 km_size = func(km_sizes, self.max_km_sample_size)
                 km_starts = [int(second_start*self.sr_km) for second_start in second_starts]
                 if with_km:
                     collated_km, padding_mask_km, km_starts = self.collater_wav(km_source, km_size, km_starts, 
                                                                                 pad_value=self.km_pad_idx if self.km_pad_idx is not None else 0.0)
+                if with_speech_tokens:
+                    collated_st, padding_mask_km, km_starts = self.collater_wav(speech_tokens, km_size, km_starts, pad_value=None)
+                    collated_st = collated_st.transpose(-1, -2)  # (B, T, 8) -> (B, 8, T)
                 if with_hu:
                     collated_hu, padding_mask_km, km_starts = self.collater_wav(hu_source, km_size, km_starts)
             elif self.fake_km_mask:
@@ -407,7 +434,7 @@ class AVHubertDataset(FairseqDataset):
             for i in range(self.num_labels)
         ]
         targets_list, lengths_list, ntokens_list = self.collater_label_text(targets_by_label)
-        source = {"audio": collated_audios, "video": collated_videos, "pitch": collated_pitches, "km": collated_km, "hu": collated_hu, "name": names,}
+        source = {"audio": collated_audios, "video": collated_videos, "pitch": collated_pitches, "km": collated_km, "hu": collated_hu, "st": collated_st, "name": names,}
         net_input = {"source": source,  # Definitely not None
                     "padding_mask_wav": padding_mask,  # Definitely not None
                     "padding_mask_mel": padding_mask_mel,  # Definitely not None
