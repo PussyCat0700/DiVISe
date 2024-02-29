@@ -32,9 +32,9 @@
     "fmax": 8000,
     "fmax_for_loss": null,
 
-    "unit_name":"cluster_label_100",
-    "valid_unit_name":"valid_cluster_label",
-    "test_unit_name":"test_cluster_label",
+    "unit_name":"train_cluster_label_100",
+    "valid_unit_name":"valid_cluster_label_100",
+    "test_unit_name":"test_cluster_label_100",
     "unit_method":"hard",
     "k":100,
     "unit_scale": 1.0,
@@ -44,7 +44,7 @@
 
     "dist_config": {
         "dist_backend": "nccl",
-        "dist_url": "tcp://localhost:55002",
+        "dist_url": "tcp://localhost:55001",
         "world_size": 1
     }
 }
