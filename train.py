@@ -9,7 +9,7 @@ from omegaconf import OmegaConf
 from transformers import Wav2Vec2ForCTC
 import torchmetrics
 from tqdm import tqdm
-from constants import GRIFFINLIM, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD, UNIT_HARD, UNIT_HIFIGAN_NO_GRAD, UNIT_SOFT
+from constants import GENERATOR_METHODS, GRIFFINLIM, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD, UNIT_METHODS, UNIT_SPEECH_TOKENIZER_NO_GRAD, UNIT_HIFIGAN_NO_GRAD, UNIT_SOFT
 
 from dataset import load_avhubert_config, load_dataset, get_dataloader
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -93,9 +93,11 @@ def train(rank, a, h, avhubert_config):
     torch.cuda.set_device(rank)  # A very strong boost. See https://github.com/jik876/hifi-gan/pull/25
     device = torch.device('cuda:{:d}'.format(rank))
     if a.train_mode == VIDEO2MEL_MODE:
-        generator_mode = HIFIGAN_NO_GRAD if a.hifigan_ckpt is not None else GRIFFINLIM
-        if h.unit_name is not None and h.unit_method == UNIT_HIFIGAN_NO_GRAD:
-            generator_mode = UNIT_HIFIGAN_NO_GRAD
+        generator_mode = GRIFFINLIM
+        if a.hifigan_ckpt is not None:
+            generator_mode = HIFIGAN_NO_GRAD
+        if h.unit_name is not None:
+            generator_mode = h.unit_method
     elif a.train_mode == VIDEO2WAV_MODE:
         generator_mode = HIFIGAN_WITH_GRAD
     prosody_minmax_dict = None
@@ -112,10 +114,15 @@ def train(rank, a, h, avhubert_config):
             })
     unit_dict = None
     if h.unit_name is not None:
-        if generator_mode != UNIT_HIFIGAN_NO_GRAD:
+        unit_key = {
+            UNIT_HIFIGAN_NO_GRAD: "km",
+            UNIT_SPEECH_TOKENIZER_NO_GRAD: "st"
+        }[h.unit_method]
+        if generator_mode not in UNIT_METHODS:
             unit_dict = {
                 "k":h.k,
                 "is_soft":h.unit_method == UNIT_SOFT,  # This term will be poped to AVHuBERTEncoder only
+                "padding":h.unit_method != UNIT_SPEECH_TOKENIZER_NO_GRAD,
             }
             if h.unit_method == UNIT_SOFT:
                 unit_dict.update({
@@ -210,6 +217,7 @@ def train(rank, a, h, avhubert_config):
     if h.unit_name is not None:
         dataloading_kwargs = {
             "km_pad_class_idx": h.k,
+            "generator_mode":generator_mode,
         }
     trainset = load_dataset("train", avhubert_config["task"], h.prosody_type, h.unit_name, h.hu_repr_name, **dataloading_kwargs)
     train_loader, train_sampler = get_dataloader(trainset, 
@@ -358,7 +366,7 @@ def train(rank, a, h, avhubert_config):
                 if h.unit_name is not None or h.hu_repr_name is not None:
                     kmeans_mask = batch["net_input"]["padding_mask_km"].to(device)
                     if h.unit_name is not None:
-                        unit_target["kmeans_target"] = avhubert_source_batch["km"].to(device)
+                        unit_target["kmeans_target"] = avhubert_source_batch[unit_key].to(device)
                         unit_target["kmeans_mask"] = ~kmeans_mask
                     if h.hu_repr_name is not None:
                         hu_target["hubert_representation"] = avhubert_source_batch["hu"].to(device)
@@ -389,10 +397,10 @@ def train(rank, a, h, avhubert_config):
                     prosody_loss = pitch_loss+energy_loss
                 if h.unit_name is not None:
                     kmeans_targets = unit_target["kmeans_target"]         
-                    if h.unit_method in [UNIT_HARD, UNIT_HIFIGAN_NO_GRAD]:
-                        if h.unit_method == UNIT_HARD:
+                    if h.unit_method in GENERATOR_METHODS:
+                        if h.unit_method == HIFIGAN_NO_GRAD:
                             unit_predictions = generator_out["unit"]["kmeans_pred"]
-                        elif h.unit_method == UNIT_HIFIGAN_NO_GRAD:
+                        elif h.unit_method in UNIT_METHODS:
                             unit_predictions = generator_out["revise_logits"]
                         C = unit_predictions.shape[-1]
                         unit_predictions = unit_predictions.masked_select((~kmeans_mask).unsqueeze(-1)).reshape(-1, C)
@@ -533,7 +541,7 @@ def train(rank, a, h, avhubert_config):
                 # Validation&Checkpointing
                 if steps in saving_updates and rank == 0:
                     val_args = {
-                        "generator":generator,
+                        "generator":generator.module if h.num_gpus > 1 else generator,
                         "w2v_processor":w2v_processor,
                         "w2v_model":w2v_model,
                         "a":a,
@@ -544,6 +552,7 @@ def train(rank, a, h, avhubert_config):
                         "mel2wav_inverter":mel2wav_inverter,
                         "mode":VALID_MODE,
                         "sw":sw,
+                        "unit_key":unit_key,
                     }
                     validate(**val_args)
                     # checkpointing
@@ -599,7 +608,7 @@ def train(rank, a, h, avhubert_config):
     # Ultimate test
     if rank == 0:
         test_args = {
-                "generator":generator,
+                "generator":generator.module if h.num_gpus > 1 else generator,
                 "w2v_processor":w2v_processor,
                 "w2v_model":w2v_model,
                 "a":a,
@@ -610,6 +619,7 @@ def train(rank, a, h, avhubert_config):
                 "mel2wav_inverter":mel2wav_inverter,
                 "mode":TEST_MODE,
                 "sw":sw,
+                "unit_key":unit_key,
             }
         validate(**test_args)
 def validate(
@@ -621,6 +631,7 @@ def validate(
     device,
     loader,
     epoch,
+    unit_key,
     mel2wav_inverter:MelSpectrogramInverter=None,
     mode=VALID_MODE,
     sw:SummaryWriter=None,
@@ -652,7 +663,9 @@ def validate(
             )
         pbar = tqdm(loader, desc="Validation in progress...")
         if h.unit_name is not None:
-            num_classes, task, average = h.k+1, "multiclass", "macro"
+            num_classes, task, average = h.k, "multiclass", "macro"
+            if generator.with_extra_padding_unit:
+                num_classes += 1
             valid_acc = torchmetrics.Accuracy(task=task, num_classes=num_classes, average=average).to(device)
             valid_recall = torchmetrics.Recall(task=task, num_classes=num_classes, average=average).to(device)
             valid_precision = torchmetrics.Precision(task=task, num_classes=num_classes, average=average).to(device)
@@ -700,14 +713,14 @@ def validate(
             elif a.train_mode == VIDEO2MEL_MODE:
                 if y_g_avhubert_mel is not None:
                     y_g_hat = mel2wav_inverter(y_g_avhubert_mel.detach().transpose(-1, -2))
-                if a.hifigan_ckpt is not None:
+                if generator.with_generator:
                     y_g_hat_vc = generator_out["wav_generated"]
-            if h.unit_name is not None and avhubert_source_batch["km"] is not None:
+            if h.unit_name is not None and avhubert_source_batch[unit_key] is not None:
                 with torch.inference_mode():
-                    if h.unit_method in [UNIT_HARD, UNIT_HIFIGAN_NO_GRAD]:
-                        if h.unit_method == UNIT_HARD:
+                    if h.unit_method in GENERATOR_METHODS:
+                        if h.unit_method == HIFIGAN_NO_GRAD:
                             preds_km = generator_out["unit"]["kmeans_pred"]
-                        elif h.unit_method == UNIT_HIFIGAN_NO_GRAD:
+                        elif h.unit_method in UNIT_METHODS:
                             preds_km = generator_out["revise_logits"]
                             # preds_km = preds_km[..., :-1]  # rid of padding class idx... WON'T WORK?!
                         preds_km = preds_km.transpose(2, 1)  # (B, C, T)
@@ -719,7 +732,7 @@ def validate(
                         embedding_targets = embedding_targets.unsqueeze(1).unsqueeze(1)  # [k, 1, 1, hubert_hidden]
                         sim_matrix = F.cosine_similarity(embedding_predictions, embedding_targets, dim=-1).softmax(dim=0)  # [k, B, T]
                         preds_km = sim_matrix.permute(1, 0, 2)  # [B, k, T]
-                    targets_km = avhubert_source_batch["km"].to(device)
+                    targets_km = avhubert_source_batch[unit_key].to(device)
                     acc = valid_acc(preds_km, targets_km).item()
                     recall = valid_recall(preds_km, targets_km).item()
                     precision = valid_precision(preds_km, targets_km).item()

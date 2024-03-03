@@ -4,7 +4,8 @@ import torch.nn as nn
 from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
 from avhubert.avhubert_as_upstream import AVHubertEncoder
-from constants import GRIFFINLIM, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD, UNIT_HIFIGAN_NO_GRAD
+from constants import GRIFFINLIM, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD, UNIT_METHODS, UNIT_SPEECH_TOKENIZER_NO_GRAD, UNIT_HIFIGAN_NO_GRAD
+from speechtokenizer import SpeechTokenizer
 from utils import init_weights, get_padding, mpd_length_variators, msd_length_variators
 
 LRELU_SLOPE = 0.1
@@ -141,7 +142,7 @@ class AVHuBERT2UnitHiFiGAN(nn.Module):
         self.attention_dim = attention_dim
         # Define the transposed convolution layer
         # Assuming the number of input channels is also 768, change it if it's different
-        self.transposed_conv = nn.ConvTranspose1d(in_channels=attention_dim*4, out_channels=unit_nums+1,
+        self.transposed_conv = nn.ConvTranspose1d(in_channels=attention_dim*4, out_channels=unit_nums,
                                                   kernel_size=4, stride=2, padding=1)
         # Define the GeLU activation
         self.gelu = nn.GELU()
@@ -153,6 +154,17 @@ class AVHuBERT2UnitHiFiGAN(nn.Module):
         # Apply GeLU activation
         x = self.gelu(x)
         return x
+    
+class SpeechTokenizerGenerator(nn.Module):
+    def __init__(self, speechtokenizer_config) -> None:
+        super().__init__()
+        self.model = SpeechTokenizer.load_from_checkpoint(
+            config_path=speechtokenizer_config['config_path'],
+            ckpt_path=speechtokenizer_config['ckpt_path'],
+            )
+    
+    def forward(self, x, st):
+        return self.model.decode(x, st)
         
     
 class AVHuBERTGenerator(nn.Module):
@@ -160,20 +172,25 @@ class AVHuBERTGenerator(nn.Module):
         super().__init__()
         # Intuitively I think generating mel-spectrograms after conformer will be better regardless of generator.
         # To load runs done by previous commits, set mel_before_conformer to True.
-        self.early_return = generator_mode == UNIT_HIFIGAN_NO_GRAD
+        self.early_return = generator_mode in UNIT_METHODS
         self.frontend_with_encoder = AVHubertEncoder(avhubert_model_config, hifigenerator_config.num_mels, prosody_minmax_dict=prosody_minmax_dict, unit_dict=unit_dict, hu_dict=hu_dict, mel_before_conformer=False, early_return=self.early_return)
         self.generator_mode = generator_mode
         self.with_generator = generator_mode != GRIFFINLIM
+        self.with_extra_padding_unit = self.generator_mode == UNIT_HIFIGAN_NO_GRAD
+        attention_dim = self.frontend_with_encoder.attention_dim
         if self.generator_mode == HIFIGAN_WITH_GRAD:
-            attention_dim = self.frontend_with_encoder.attention_dim
             self.generator = Generator(hifigenerator_config, attention_dim)
         elif self.generator_mode == HIFIGAN_NO_GRAD:
             mel_dim = hifigenerator_config.num_mels
             self.generator = Generator(hifigenerator_config, mel_dim)
-        elif self.generator_mode == UNIT_HIFIGAN_NO_GRAD:
-            attention_dim = self.frontend_with_encoder.attention_dim
-            self.generator = Generator(hifigenerator_config, hifigenerator_config.num_mels, unit_nums=hifigenerator_config.k)
-            self.unit_upsampler = AVHuBERT2UnitHiFiGAN(attention_dim, hifigenerator_config.k)
+        elif self.generator_mode in UNIT_METHODS:
+            n_units = hifigenerator_config.k
+            if self.with_extra_padding_unit:
+                n_units += 1
+                self.generator = Generator(hifigenerator_config, hifigenerator_config.num_mels, unit_nums=hifigenerator_config.k)
+            elif self.generator_mode == UNIT_SPEECH_TOKENIZER_NO_GRAD:
+                self.generator = SpeechTokenizerGenerator(hifigenerator_config.speechtokenizer)
+            self.unit_upsampler = AVHuBERT2UnitHiFiGAN(attention_dim, n_units)
     
     def forward(self, video, prosody_targets, unit_target, hu_target, mel_masks=None):
         avhubert_input = {"video": video, "audio": None,}
@@ -185,12 +202,15 @@ class AVHuBERTGenerator(nn.Module):
                     wav_generated = self.generator(encoder_out["melspec_out"])  # generator takes in tensor shaped (bs, mellen, num_mel)
             elif self.generator_mode == HIFIGAN_WITH_GRAD:
                 wav_generated = self.generator(encoder_out["output"])  # generator takes in tensor shaped (bs, mellen, attention_dim)
-            elif self.generator_mode == UNIT_HIFIGAN_NO_GRAD:
+            elif self.generator_mode in UNIT_METHODS:
                 downsampled_encoder_out = self.unit_upsampler(encoder_out)
+                # upsampler returns (bs, mellen/2, k)
+                indices = downsampled_encoder_out.argmax(dim=-1)
                 with torch.inference_mode():
-                    # upsampler returns (bs, mellen/2, k)
-                    indices = downsampled_encoder_out.argmax(dim=-1)
-                    wav_generated = self.generator(indices)
+                    if self.generator_mode == UNIT_HIFIGAN_NO_GRAD:
+                        wav_generated = self.generator(indices)
+                    elif self.generator_mode == UNIT_SPEECH_TOKENIZER_NO_GRAD:
+                        wav_generated = self.generator(indices.unsqueeze(0), st=0).squeeze(0)
         else:
             wav_generated = None
         # (bs, mellen, num_mels) -> (bs, num_mels, mellen)

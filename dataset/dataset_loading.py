@@ -2,6 +2,7 @@ from argparse import Namespace
 
 from omegaconf import OmegaConf
 from avhubert import AVHubertPretrainingConfig, AVHubertConfig
+from constants import UNIT_SPEECH_TOKENIZER_NO_GRAD
 from dataset.avdatasets import AVHubertDataset
 from torch.utils.data import DistributedSampler, DataLoader, ConcatDataset
 from typing import List
@@ -49,15 +50,18 @@ def get_dataloader(dataset:AVHubertDataset, batch_size, shuffle, num_workers, di
     
     return loader, sampler
 
-def load_dataset(split: str, cfg:AVHubertPretrainingConfig, pitch_type=None, km_name=None, hu_name=None, st_name=None, fake_km_mask=False, km_pad_class_idx=None, max_keep_sample_size=500) -> None:
+def load_dataset(split: str, cfg:AVHubertPretrainingConfig, pitch_type=None, km_name=None, hu_name=None, generator_mode=None, fake_km_mask=False, km_pad_class_idx=None, max_keep_sample_size=500) -> None:
         manifest = f"{cfg.data}/{split}.tsv"
         paths = [
             f"{cfg.data}/{split}.{l}" for l in cfg.labels
         ]
+        st_name = None
         if km_name is not None:
-            km_name = f"{cfg.data}/{km_name}.km"
-        if st_name is not None:
-            st_name = f"{cfg.data}/{st_name}.st"
+            if generator_mode == UNIT_SPEECH_TOKENIZER_NO_GRAD:
+                st_name = f"{cfg.data}/{km_name}.st"
+                km_name = None
+            else:
+                km_name = f"{cfg.data}/{km_name}.km"
         image_aug = cfg.image_aug if split == 'train' else False
         # noise_fn, noise_snr = f"{self.cfg.noise_wav}/{split}.tsv" if self.cfg.noise_wav is not None else None, eval(self.cfg.noise_snr)
         # noise_num = self.cfg.noise_num

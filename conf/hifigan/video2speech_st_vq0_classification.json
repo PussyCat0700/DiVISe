@@ -32,11 +32,15 @@
     "fmax": 8000,
     "fmax_for_loss": null,
 
-    "unit_name":"train_cluster_label_large",
-    "valid_unit_name":"valid_cluster_label_large",
-    "test_unit_name":"test_cluster_label_large",
-    "unit_method":"vocoder_nogradient",
-    "k":2000,
+    "unit_name":"train_hubert_avg_config",
+    "valid_unit_name":"valid_hubert_avg_config",
+    "test_unit_name":"test_hubert_avg_config",
+    "speechtokenizer":{
+        "config_path": "/home/yfliu/SpeechTokenizer/ckpt/speechtokenizer_hubert_avg_config.json",
+        "ckpt_path": "/home/yfliu/SpeechTokenizer/ckpt/SpeechTokenizer.pt"
+    },
+    "unit_method":"SpeechTokenizer as vocoder",
+    "k":1024,
     "unit_scale": 1.0,
 
     "save_on_metric": "mel_spec_error_generator",
@@ -44,7 +48,7 @@
 
     "dist_config": {
         "dist_backend": "nccl",
-        "dist_url": "tcp://localhost:55005",
+        "dist_url": "tcp://localhost:55010",
         "world_size": 1
     }
 }

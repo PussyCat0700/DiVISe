@@ -136,9 +136,10 @@ class HuBERTPredictor(nn.Module):
     https://github.com/ming024/FastSpeech2/blob/d4e79eb52e8b01d24703b2dfc0385544092958f3/model/modules.py#L17C19-L17C19
     """
     # TODO: check pitch/energy min/max for LRS3
-    def __init__(self, k=1000, encoder_hidden=512,):
+    def __init__(self, k=1000, encoder_hidden=512, padding=True):
         super().__init__()
-        self.hubert_predictor = Predictor(in_dim=encoder_hidden, out_dim=k+1)
+        outdim = k+1 if padding else k
+        self.hubert_predictor = Predictor(in_dim=encoder_hidden, out_dim=outdim)
         self.kmeans_embeddings = nn.Embedding(k+1, encoder_hidden)
             
     def get_embedding(self, x, target_embedding_idx, mask):

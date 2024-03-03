@@ -394,6 +394,7 @@ class AVHubertDataset(FairseqDataset):
         collated_pitches = None
         collated_km = None
         collated_hu = None
+        collated_st = None
         padding_mask_km = None
         if audio_source is not None:
             audio_size = func(audio_sizes, self.max_audio_sample_size)
@@ -411,7 +412,9 @@ class AVHubertDataset(FairseqDataset):
                                                                                 pad_value=self.km_pad_idx if self.km_pad_idx is not None else 0.0)
                 if with_speech_tokens:
                     collated_st, padding_mask_km, km_starts = self.collater_wav(speech_tokens, km_size, km_starts, pad_value=None)
-                    collated_st = collated_st.transpose(-1, -2)  # (B, T, 8) -> (B, 8, T)
+                    collated_st = collated_st.permute(2, 0, 1)  # (B, T, 8) -> (8, B, T)
+                    # TODO Use real serious RVQ so make collated_st return 8 line of codes.
+                    collated_st = collated_st[0]  # Saving only first-layer speech tokens of shape (B, T)
                 if with_hu:
                     collated_hu, padding_mask_km, km_starts = self.collater_wav(hu_source, km_size, km_starts)
             elif self.fake_km_mask:

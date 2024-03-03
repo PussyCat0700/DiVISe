@@ -35,7 +35,7 @@
     "unit_name":"train_cluster_label_100",
     "valid_unit_name":"valid_cluster_label_100",
     "test_unit_name":"test_cluster_label_100",
-    "unit_method":"hard",
+    "unit_method":"vocoder_nogradient",
     "k":100,
     "unit_scale": 1.0,
 
