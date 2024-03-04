@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-tsv_dir="/home/yfliu/datasets/lrs3/30h_data/"
+tsv_dir="/home/yfliu/datasets/lrs3/433h_data/"
 config_path='/home/yfliu/SpeechTokenizer/ckpt/speechtokenizer_hubert_avg_config.json'
 ckpt_path='/home/yfliu/SpeechTokenizer/ckpt/SpeechTokenizer.pt'
 lab_dir=$tsv_dir
@@ -26,4 +26,9 @@ for split in ${splits[@]}; do
     for rank in $(seq 0 $((nshard - 1))); do
     cat $lab_dir/${split}_${token_name}_${rank}_${nshard}.st
     done > $lab_dir/${split}_${token_name}.st
+done
+
+echo "Exporting speech tokens to data item directory"
+for split in ${splits[@]}; do
+    python dump_labels2.py  ${tsv_dir} ${split}_${token_name} ${token_name} ${lab_dir}
 done

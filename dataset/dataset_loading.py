@@ -50,15 +50,13 @@ def get_dataloader(dataset:AVHubertDataset, batch_size, shuffle, num_workers, di
     
     return loader, sampler
 
-def load_dataset(split: str, cfg:AVHubertPretrainingConfig, pitch_type=None, km_name=None, hu_name=None, generator_mode=None, fake_km_mask=False, km_pad_class_idx=None, max_keep_sample_size=500) -> None:
+def load_dataset(split: str, cfg:AVHubertPretrainingConfig, pitch_type=None, km_name=None, hu_name=None, st_type=None, generator_mode=None, fake_km_mask=False, km_pad_class_idx=None, max_keep_sample_size=500) -> None:
         manifest = f"{cfg.data}/{split}.tsv"
         paths = [
             f"{cfg.data}/{split}.{l}" for l in cfg.labels
         ]
-        st_name = None
         if km_name is not None:
             if generator_mode == UNIT_SPEECH_TOKENIZER_NO_GRAD:
-                st_name = f"{cfg.data}/{km_name}.st"
                 km_name = None
             else:
                 km_name = f"{cfg.data}/{km_name}.km"
@@ -78,7 +76,7 @@ def load_dataset(split: str, cfg:AVHubertPretrainingConfig, pitch_type=None, km_
             max_sample_seconds=max_sample_seconds,
             pitch_type=pitch_type,
             km_path=km_name,
-            st_path=st_name,
+            st_type=st_type,
             km_pad_class=km_pad_class_idx,
             hu_name=hu_name,
             fake_km_mask=fake_km_mask,

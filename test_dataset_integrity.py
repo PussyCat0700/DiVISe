@@ -15,7 +15,7 @@ if __name__ == '__main__':
     parser.add_argument("--pitch_type")
     parser.add_argument("--km")
     parser.add_argument("--hu_name")
-    parser.add_argument("--st_name")
+    parser.add_argument("--st_type")
     args = parser.parse_args()
     avhubert_config = load_avhubert_config(args.avhubert_config)
     with open(args.hifigan_config) as f:
@@ -29,7 +29,7 @@ if __name__ == '__main__':
             "pitch_type":args.pitch_type,
             "km_name":args.km,
             "hu_name":args.hu_name,
-            "st_name":f"{split}_{args.st_name}",
+            "st_type":args.st_type,
         }
         if "train" != split:
             # kwargs.update({

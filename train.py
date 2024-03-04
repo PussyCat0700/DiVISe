@@ -216,10 +216,14 @@ def train(rank, a, h, avhubert_config):
     dataloading_kwargs = {}
     if h.unit_name is not None:
         dataloading_kwargs = {
+            "pitch_type":h.prosody_type,
+            "km_name":h.unit_name,
+            "hu_name":h.hu_repr_name,
+            "st_type":h.st_type,
             "km_pad_class_idx": h.k,
             "generator_mode":generator_mode,
         }
-    trainset = load_dataset("train", avhubert_config["task"], h.prosody_type, h.unit_name, h.hu_repr_name, **dataloading_kwargs)
+    trainset = load_dataset("train", avhubert_config["task"], **dataloading_kwargs)
     train_loader, train_sampler = get_dataloader(trainset, 
                                                 batch_size=h.batch_size,
                                                 num_workers=h.num_gpus, 
@@ -230,7 +234,9 @@ def train(rank, a, h, avhubert_config):
                                                 )
 
     if rank == 0:
-        kwargs = {}
+        kwargs = {
+            "st_type": h.st_type
+        }
         if h.unit_name is not None and h.valid_unit_name is not None:
             # You can apply trained kmeans model on valid set to get km labels just for reference.
             kwargs.update({
@@ -828,12 +834,11 @@ def main():
         data = f.read()
 
     json_config = json.loads(data)
-    if 'prosody_type' not in json_config:
-        json_config['prosody_type'] = None
-    if 'unit_name' not in json_config:
-        json_config['unit_name'] = None
-    if 'hu_repr_name' not in json_config:
-        json_config['hu_repr_name'] = None
+    default_nones = {
+        'prosody_type', 'st_type', 'hu_repr_name',
+        'unit_name', 'valid_unit_name', 'test_unit_name',
+    }
+    json_config.update({k:None for k in default_nones if k not in json_config.keys()})
     h = AttrDict(json_config)
     if h.prosody_type is not None:
         assert h.norm_mode in ['original', 'meanvar'], f"{h.norm_mode=} which is not a valid way to normalize prosody."

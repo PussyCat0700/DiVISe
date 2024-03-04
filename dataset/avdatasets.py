@@ -89,14 +89,6 @@ def load_km_labels(km_path, inds, tot):
         km_labels = [km_labels[i] for i in inds]
     return km_labels
 
-def load_speech_tokens(st_path, inds, tot):
-    with open(st_path, 'r') as f:
-        speech_tokens = f.readlines()
-        assert len(speech_tokens) == tot, f"{len(speech_tokens)=} does not match lines in tsv files({tot})." \
-                    "Please check if they are on the same split."
-        speech_tokens = [speech_tokens[i] for i in inds]
-    return speech_tokens
-
 class AVHubertDataset(FairseqDataset):
     def __init__(
             self,
@@ -108,7 +100,7 @@ class AVHubertDataset(FairseqDataset):
             max_sample_seconds: Optional[float] = None,
             pitch_type: Optional[str] = None,  # Should be pyworld or kaldi
             km_path: Optional[str] = None,  # Should be path to your .km file
-            st_path: Optional[str] = None,  # Should be path to your .st file
+            st_type: Optional[str] = None,  # Should be hubert_avg_config
             km_pad_class: Optional[int] = None,  # This will be neccessary in end-to-end training
             hu_name: Optional[str] = None,  # Should be {kmeans_split} in hubertrep_export.py 
             fake_km_mask: bool = False,  # provide km padding mask even on a set without km labels.
@@ -160,8 +152,8 @@ class AVHubertDataset(FairseqDataset):
             self.km_labels = load_km_labels(km_path, inds, tot)
         else:
             self.km_labels = None
-        # speech tokens are stored in a single text-format file so it must be preloaded into running memory.
-        self.speech_tokens = load_speech_tokens(st_path, inds, tot) if st_path else None
+        # speech tokens are stored in multiple text-format files under the dir of audio files.
+        self.st_type = st_type
         if image_aug:
             self.transform = custom_utils.Compose([
                 custom_utils.Normalize( 0.0,255.0 ),
@@ -241,8 +233,11 @@ class AVHubertDataset(FairseqDataset):
         else:
             km_labels = None
         speech_tokens = None
-        if self.speech_tokens is not None:
-            speech_tokens = json.loads(self.speech_tokens[index])
+        if self.st_type is not None: #
+            speech_token_fn = os.path.join(audio_base_dir, f"{audio_id}_{self.st_type}.st")
+            with open(speech_token_fn, 'r') as f:
+                speech_tokens = f.readline()
+            speech_tokens = json.loads(speech_tokens)
         if self.hu_name is not None:
             load_path = os.path.join(audio_base_dir, f"{audio_id}_{self.hu_name}.npy")
             hubert_hu = np.load(load_path)

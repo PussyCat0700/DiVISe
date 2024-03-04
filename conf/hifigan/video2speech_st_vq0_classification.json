@@ -32,9 +32,8 @@
     "fmax": 8000,
     "fmax_for_loss": null,
 
-    "unit_name":"train_hubert_avg_config",
-    "valid_unit_name":"valid_hubert_avg_config",
-    "test_unit_name":"test_hubert_avg_config",
+    "unit_name":"hubert_avg_config",
+    "st_type":"hubert_avg_config",
     "speechtokenizer":{
         "config_path": "/home/yfliu/SpeechTokenizer/ckpt/speechtokenizer_hubert_avg_config.json",
         "ckpt_path": "/home/yfliu/SpeechTokenizer/ckpt/SpeechTokenizer.pt"
