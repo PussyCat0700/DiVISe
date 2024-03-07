@@ -4,7 +4,8 @@ import torch.nn as nn
 from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
 from avhubert.avhubert_as_upstream import AVHubertEncoder
-from constants import GRIFFINLIM, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD, UNIT_METHODS, UNIT_SPEECH_TOKENIZER_NO_GRAD, UNIT_HIFIGAN_NO_GRAD
+from vocoders.bigvgan.bigvgan_model import BigVGAN
+from constants import BIGVGAN_NO_GRAD, GRIFFINLIM, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD, UNIT_METHODS, UNIT_SPEECH_TOKENIZER_NO_GRAD, UNIT_HIFIGAN_NO_GRAD
 from speechtokenizer import SpeechTokenizer
 from utils import init_weights, get_padding, mpd_length_variators, msd_length_variators
 
@@ -178,11 +179,14 @@ class AVHuBERTGenerator(nn.Module):
         self.with_generator = generator_mode != GRIFFINLIM
         self.with_extra_padding_unit = self.generator_mode == UNIT_HIFIGAN_NO_GRAD
         attention_dim = self.frontend_with_encoder.attention_dim
+        eval_mode_for_vocoder = self.with_generator and self.generator_mode!=HIFIGAN_WITH_GRAD
         if self.generator_mode == HIFIGAN_WITH_GRAD:
             self.generator = Generator(hifigenerator_config, attention_dim)
         elif self.generator_mode == HIFIGAN_NO_GRAD:
             mel_dim = hifigenerator_config.num_mels
             self.generator = Generator(hifigenerator_config, mel_dim)
+        elif self.generator_mode == BIGVGAN_NO_GRAD:
+            self.generator = BigVGAN(hifigenerator_config)
         elif self.generator_mode in UNIT_METHODS:
             n_units = hifigenerator_config.k
             if self.with_extra_padding_unit:
@@ -191,13 +195,17 @@ class AVHuBERTGenerator(nn.Module):
             elif self.generator_mode == UNIT_SPEECH_TOKENIZER_NO_GRAD:
                 self.generator = SpeechTokenizerGenerator(hifigenerator_config.speechtokenizer)
             self.unit_upsampler = AVHuBERT2UnitHiFiGAN(attention_dim, n_units)
+        if eval_mode_for_vocoder:
+            self.generator.eval()
+            for param in self.generator.parameters():
+                param.requires_grad = False
     
     def forward(self, video, prosody_targets, unit_target, hu_target, mel_masks=None):
         avhubert_input = {"video": video, "audio": None,}
         encoder_out = self.frontend_with_encoder(avhubert_input, prosody_targets, unit_target, hu_target, mel_masks)
         downsampled_encoder_out = None
         if self.with_generator:
-            if self.generator_mode == HIFIGAN_NO_GRAD:
+            if self.generator_mode in [HIFIGAN_NO_GRAD, BIGVGAN_NO_GRAD]:
                 with torch.inference_mode():
                     wav_generated = self.generator(encoder_out["melspec_out"])  # generator takes in tensor shaped (bs, mellen, num_mel)
             elif self.generator_mode == HIFIGAN_WITH_GRAD:
@@ -237,7 +245,12 @@ class AVHuBERTGenerator(nn.Module):
         avhubert_weight = torch.load(pretrained_avhubert_path, map_location=map_location)['model']
         #  label_embs_concat and final_proj will not be used in feature extraction.
         self.frontend_with_encoder.avhubert_model.load_state_dict(avhubert_weight)
-
+    
+    def load_full_model_weight(self, state_dict, ignore_generator=False):
+        state_dict = {k:v for k,v in state_dict.items() if not k.startswith('generator')}
+        incompatiblekeys = self.load_state_dict(state_dict, strict=not ignore_generator)
+        if ignore_generator:
+            assert all(x.startswith('generator') for x in incompatiblekeys.missing_keys) and (not incompatiblekeys.unexpected_keys), f"When loading model, got {incompatiblekeys=}"
 
 class DiscriminatorP(torch.nn.Module):
     def __init__(self, period, kernel_size=5, stride=3, use_spectral_norm=False):

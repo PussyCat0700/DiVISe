@@ -9,7 +9,9 @@ from omegaconf import OmegaConf
 from transformers import Wav2Vec2ForCTC
 import torchmetrics
 from tqdm import tqdm
-from constants import GENERATOR_METHODS, GRIFFINLIM, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD, UNIT_METHODS, UNIT_SPEECH_TOKENIZER_NO_GRAD, UNIT_HIFIGAN_NO_GRAD, UNIT_SOFT
+from constants import GRIFFINLIM,\
+    GENERATOR_METHODS, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD, BIGVGAN_NO_GRAD,\
+    UNIT_METHODS, UNIT_SPEECH_TOKENIZER_NO_GRAD, UNIT_HIFIGAN_NO_GRAD, UNIT_SOFT
 
 from dataset import load_avhubert_config, load_dataset, get_dataloader
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -84,6 +86,10 @@ def train(rank, a, h, avhubert_config):
         run_name = os.path.basename(full_path)
         if a.test:
             run_name += '-test'
+            if a.hifigan_ckpt is not None:
+                run_name += '_hifigan'
+            elif a.bigvgan_ckpt is not None:
+                run_name += '_bigvgan'
         wandb.init(project=proj_name, name=run_name, sync_tensorboard=True)
     if h.num_gpus > 1:
         init_process_group(backend=h.dist_config['dist_backend'], init_method=h.dist_config['dist_url'],
@@ -96,6 +102,8 @@ def train(rank, a, h, avhubert_config):
         generator_mode = GRIFFINLIM
         if a.hifigan_ckpt is not None:
             generator_mode = HIFIGAN_NO_GRAD
+        if a.bigvgan_ckpt is not None:
+            generator_mode = BIGVGAN_NO_GRAD
         if h.unit_name is not None:
             generator_mode = h.unit_method
     elif a.train_mode == VIDEO2WAV_MODE:
@@ -113,6 +121,7 @@ def train(rank, a, h, avhubert_config):
                 "energy_max":h.energy_max,
             })
     unit_dict = None
+    unit_key = None
     if h.unit_name is not None:
         unit_key = {
             UNIT_HIFIGAN_NO_GRAD: "km",
@@ -140,6 +149,7 @@ def train(rank, a, h, avhubert_config):
                                   hu_dict=hu_dict,
                                   generator_mode=generator_mode,
                                   ).to(device)
+    generator_module = generator.module if h.num_gpus > 1 else generator
     mpd = MultiPeriodDiscriminator().to(device)
     msd = MultiScaleDiscriminator().to(device)
 
@@ -163,6 +173,7 @@ def train(rank, a, h, avhubert_config):
         mpd.load_state_dict(unwrap_module_discriminator(hifigan_weight["discriminator"]["model"], "mpd"))
         msd.load_state_dict(unwrap_module_discriminator(hifigan_weight["discriminator"]["model"], "msd"))
     # TODO: It is really unreasonable to keep all training states in state_dict_do, and it is still here just for compatibility.
+    override_vocoder = a.train_mode == VIDEO2MEL_MODE and (a.hifigan_ckpt is not None or a.bigvgan_ckpt is not None)
     if a.train_mode == VIDEO2WAV_MODE:
         if cp_g is None or cp_do is None:
             state_dict_do = None
@@ -182,36 +193,53 @@ def train(rank, a, h, avhubert_config):
             last_epoch = -1
         else:
             state_dict_g = load_checkpoint(cp_g, device)
-            generator.load_state_dict(state_dict_g['generator'])
+            generator.load_full_model_weight(state_dict_g['generator'], ignore_generator=override_vocoder)
             steps = state_dict_g['steps'] + 1
             last_epoch = state_dict_g['epoch']
             best_metrics = state_dict_g['metrics']
-            
-    if a.hifigan_ckpt is not None and a.train_mode == VIDEO2MEL_MODE:
-        # hifigan ckpt is not supposed to be updated in training with 2mel mode
-        hifigan_weight = torch.load(a.hifigan_ckpt, map_location=device)
-        generator.generator.load_state_dict(unwrap_module_generator(
-            hifigan_weight["generator"]["model"], ignore_conv_pre=a.train_mode==VIDEO2WAV_MODE,
-            ))
+    if override_vocoder:
+        if a.hifigan_ckpt is not None:
+            # hifigan ckpt is not supposed to be updated in training with 2mel mode
+            hifigan_weight = torch.load(a.hifigan_ckpt, map_location=device)
+            generator.generator.load_state_dict(unwrap_module_generator(
+                hifigan_weight["generator"]["model"], ignore_conv_pre=a.train_mode==VIDEO2WAV_MODE,
+                ))
+        if a.bigvgan_ckpt is not None:
+            bigvgan_weight = torch.load(a.bigvgan_ckpt, map_location=device)
+            generator.generator.load_state_dict(bigvgan_weight["generator"])
 
     if h.num_gpus > 1:
         generator = DistributedDataParallel(generator, device_ids=[rank], find_unused_parameters=True).to(device)
         if a.train_mode == VIDEO2WAV_MODE:
             mpd = DistributedDataParallel(mpd, device_ids=[rank]).to(device)
             msd = DistributedDataParallel(msd, device_ids=[rank]).to(device)
-
-    optim_g = torch.optim.AdamW(generator.parameters(), h.learning_rate, betas=[h.adam_b1, h.adam_b2])
+    optim_g = torch.optim.AdamW([p for p in generator.parameters() if p.requires_grad], h.learning_rate, betas=[h.adam_b1, h.adam_b2])
     if a.train_mode == VIDEO2WAV_MODE:
         optim_d = torch.optim.AdamW(itertools.chain(msd.parameters(), mpd.parameters()),
                                     h.learning_rate, betas=[h.adam_b1, h.adam_b2])
 
-    if a.train_mode == VIDEO2WAV_MODE:
-        if state_dict_do is not None:
-            optim_g.load_state_dict(state_dict_do['optim_g'])
-            optim_d.load_state_dict(state_dict_do['optim_d'])
-    elif a.train_mode == VIDEO2MEL_MODE:
-        if state_dict_g is not None:
-            optim_g.load_state_dict(state_dict_g['optim_g'])
+    if not a.test:
+        if a.train_mode == VIDEO2WAV_MODE:
+            if state_dict_do is not None:
+                optim_g.load_state_dict(state_dict_do['optim_g'])
+                optim_d.load_state_dict(state_dict_do['optim_d'])
+        elif a.train_mode == VIDEO2MEL_MODE:
+            if state_dict_g is not None:
+                optim_g.load_state_dict(state_dict_g['optim_g'])
+        if not h.revise_setting:
+            scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=h.lr_decay, last_epoch=last_epoch)
+        else:
+            actual_frozen_updates = math.ceil(h.frozen_steps / h.num_gpus)
+            if steps <= actual_frozen_updates:
+                logging.info(f"AVHuBERT will be frozen for {actual_frozen_updates} updates.")
+                generator_module.frontend_with_encoder.avhubert_grad(False)
+            else:
+                logging.info(f"current {steps=}. AVHuBERT will not be frozen after {actual_frozen_updates} updates.")
+            # Exactly as in ReVISE Tab. 17
+            scheduler_g = TriStageLRScheduler(optim_g, actual_total_updates, h.t1_percent, h.t2_percent, last_lr_factor=h.last_lr_factor,last_epoch=steps-1)
+        if a.train_mode == VIDEO2WAV_MODE:
+            scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=h.lr_decay, last_epoch=last_epoch)
+        generator_module.frontend_with_encoder.update_steps(steps, actual_total_updates)
 
     dataloading_kwargs = {}
     if h.unit_name is not None:
@@ -284,21 +312,6 @@ def train(rank, a, h, avhubert_config):
     saving_updates = {x for x in range(part_updates, actual_total_updates+1, part_updates)}
     logging.info(f"{actual_total_updates=}")
     logging.info(f"{a.training_epochs=}")
-    generator_module = generator.module if h.num_gpus > 1 else generator
-    if not h.revise_setting:
-        scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=h.lr_decay, last_epoch=last_epoch)
-    else:
-        actual_frozen_updates = math.ceil(h.frozen_steps / h.num_gpus)
-        if steps <= actual_frozen_updates:
-            logging.info(f"AVHuBERT will be frozen for {actual_frozen_updates} updates.")
-            generator_module.frontend_with_encoder.avhubert_grad(False)
-        else:
-            logging.info(f"current {steps=}. AVHuBERT will not be frozen after {actual_frozen_updates} updates.")
-        # Exactly as in ReVISE Tab. 17
-        scheduler_g = TriStageLRScheduler(optim_g, actual_total_updates, h.t1_percent, h.t2_percent, last_lr_factor=h.last_lr_factor,last_epoch=steps-1)
-    if a.train_mode == VIDEO2WAV_MODE:
-        scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=h.lr_decay, last_epoch=last_epoch)
-    generator_module.frontend_with_encoder.update_steps(steps, actual_total_updates)
     w2v_model = Wav2Vec2ForCTC.from_pretrained("facebook/wav2vec2-large-960h-lv60-self").to(device)
     w2v_processor = MyWav2Vec2Processor.from_pretrained("facebook/wav2vec2-large-960h-lv60-self")
     if not a.test:
@@ -814,6 +827,7 @@ def main():
     parser.add_argument('--avhubert_ckpt', help='if specified, will load pretrained weight onto AVHuBERTModel')
     parser.add_argument('--hifigan_ckpt', help='if specified, will load pretrained weight onto HiFi-GAN in v2w mode'\
         ' as part of the model or in v2m mode (with gradient) as mel-to-audio converter in v2w mode(without gradient)')
+    parser.add_argument('--bigvgan_ckpt', help='if specified, will load BigVGAN as mel-to-audio converter in v2w mode.')
     parser.add_argument('--stdout_interval', default=5, type=int)
     parser.add_argument('--summary_interval', default=100, type=int)
     parser.add_argument('--wandb', action='store_true')
