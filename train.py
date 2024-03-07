@@ -123,15 +123,16 @@ def train(rank, a, h, avhubert_config):
     unit_dict = None
     unit_key = None
     if h.unit_name is not None:
-        unit_key = {
-            UNIT_HIFIGAN_NO_GRAD: "km",
-            UNIT_SPEECH_TOKENIZER_NO_GRAD: "st"
-        }[h.unit_method]
+        speech_tokenizer_enabled = h.unit_method in [UNIT_SPEECH_TOKENIZER_NO_GRAD]
+        if speech_tokenizer_enabled:
+            unit_key = "st"
+        else:
+            unit_key = "km"
         if generator_mode not in UNIT_METHODS:
             unit_dict = {
                 "k":h.k,
                 "is_soft":h.unit_method == UNIT_SOFT,  # This term will be poped to AVHuBERTEncoder only
-                "padding":h.unit_method != UNIT_SPEECH_TOKENIZER_NO_GRAD,
+                "padding":not speech_tokenizer_enabled,
             }
             if h.unit_method == UNIT_SOFT:
                 unit_dict.update({
