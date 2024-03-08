@@ -177,7 +177,7 @@ class AVHuBERTGenerator(nn.Module):
         self.frontend_with_encoder = AVHubertEncoder(avhubert_model_config, hifigenerator_config.num_mels, prosody_minmax_dict=prosody_minmax_dict, unit_dict=unit_dict, hu_dict=hu_dict, mel_before_conformer=False, early_return=self.early_return)
         self.generator_mode = generator_mode
         self.with_generator = generator_mode != GRIFFINLIM
-        self.with_extra_padding_unit = self.generator_mode == UNIT_HIFIGAN_NO_GRAD
+        self.with_extra_padding_unit = self.generator_mode != UNIT_SPEECH_TOKENIZER_NO_GRAD
         attention_dim = self.frontend_with_encoder.attention_dim
         eval_mode_for_vocoder = self.with_generator and self.generator_mode!=HIFIGAN_WITH_GRAD
         if self.generator_mode == HIFIGAN_WITH_GRAD:

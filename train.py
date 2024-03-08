@@ -150,7 +150,7 @@ def train(rank, a, h, avhubert_config):
                                   hu_dict=hu_dict,
                                   generator_mode=generator_mode,
                                   ).to(device)
-    generator_module = generator.module if h.num_gpus > 1 else generator
+    generator_module = generator
     mpd = MultiPeriodDiscriminator().to(device)
     msd = MultiScaleDiscriminator().to(device)
 
@@ -211,6 +211,7 @@ def train(rank, a, h, avhubert_config):
 
     if h.num_gpus > 1:
         generator = DistributedDataParallel(generator, device_ids=[rank], find_unused_parameters=True).to(device)
+        generator_module = generator.module
         if a.train_mode == VIDEO2WAV_MODE:
             mpd = DistributedDataParallel(mpd, device_ids=[rank]).to(device)
             msd = DistributedDataParallel(msd, device_ids=[rank]).to(device)
@@ -218,7 +219,10 @@ def train(rank, a, h, avhubert_config):
     if a.train_mode == VIDEO2WAV_MODE:
         optim_d = torch.optim.AdamW(itertools.chain(msd.parameters(), mpd.parameters()),
                                     h.learning_rate, betas=[h.adam_b1, h.adam_b2])
-
+    actual_total_updates = math.ceil(h.total_updates / h.num_gpus)
+    part_updates = math.ceil(actual_total_updates / a.n_ckpts)
+    saving_updates = {x for x in range(part_updates, actual_total_updates+1, part_updates)}
+    logging.info(f"{actual_total_updates=}")
     if not a.test:
         if a.train_mode == VIDEO2WAV_MODE:
             if state_dict_do is not None:
@@ -275,8 +279,8 @@ def train(rank, a, h, avhubert_config):
             kwargs.update({
                 "fake_km_mask":True,
             })
-        kwargs.update(**dataloading_kwargs)
-        validset = load_dataset("valid", avhubert_config["task"], **kwargs)
+        dataloading_kwargs.update(**kwargs)
+        validset = load_dataset("valid", avhubert_config["task"], **dataloading_kwargs)
         validation_loader, _ = get_dataloader(validset, 
                                             batch_size=h.batch_size,
                                             num_workers=1, 
@@ -292,7 +296,8 @@ def train(rank, a, h, avhubert_config):
                 "fake_km_mask":True,
             })
         avhubert_config["task"].max_sample_seconds = 10000 # Hacking: No Upper Limit
-        testset = load_dataset("test", avhubert_config["task"], **kwargs)
+        dataloading_kwargs.update(**kwargs)
+        testset = load_dataset("test", avhubert_config["task"], **dataloading_kwargs)
         test_loader, _ = get_dataloader(testset, 
                                         batch_size=h.batch_size,
                                         num_workers=1, 
@@ -308,10 +313,6 @@ def train(rank, a, h, avhubert_config):
     mel2wav_inverter = MelSpectrogramInverter(h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax, device)
     mel2wav_inverter.eval()
     a.training_epochs = math.ceil(h.total_updates / h.num_gpus / len(train_loader))
-    actual_total_updates = math.ceil(h.total_updates / h.num_gpus)
-    part_updates = math.ceil(actual_total_updates / a.n_ckpts)
-    saving_updates = {x for x in range(part_updates, actual_total_updates+1, part_updates)}
-    logging.info(f"{actual_total_updates=}")
     logging.info(f"{a.training_epochs=}")
     w2v_model = Wav2Vec2ForCTC.from_pretrained("facebook/wav2vec2-large-960h-lv60-self").to(device)
     w2v_processor = MyWav2Vec2Processor.from_pretrained("facebook/wav2vec2-large-960h-lv60-self")
