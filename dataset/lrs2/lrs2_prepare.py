@@ -180,9 +180,9 @@ def trim_pretrain(root_dir, ffmpeg, rank=0, nshard=1, step=1):
         trim_audio(csv_fn, pretrain_dir, output_audio_dir, ffmpeg, rank, nshard)
     return
 
-def prep_wav(lrs3_root, ffmpeg, rank, nshard):
-    output_dir = f"{lrs3_root}/audio/"
-    video_fns = glob.glob(lrs3_root + '/trainval/*/*mp4') + glob.glob(lrs3_root + '/test/*/*mp4')
+def prep_wav(lrs2_root, ffmpeg, rank, nshard):
+    output_dir = f"{lrs2_root}/audio/"
+    video_fns = glob.glob(lrs2_root + '/main/*/*mp4')
     video_fns = sorted(video_fns)
     num_per_shard = math.ceil(len(video_fns)/nshard)
     start_id, end_id = num_per_shard*rank, num_per_shard*(rank+1)
@@ -197,24 +197,31 @@ def prep_wav(lrs3_root, ffmpeg, rank, nshard):
         subprocess.call(cmd, shell=True)
     return
 
-def get_file_label(lrs3_root):
+def get_file_label(lrs2_root, lrs2_base):
     video_ids_total, labels_total = [], []
-    for split in ['trainval', 'test']:
-        subdirs = os.listdir(os.path.join(lrs3_root, split))
-        for subdir in tqdm(subdirs):
-            video_fns = glob.glob(os.path.join(lrs3_root, split, subdir, '*mp4'))
-            video_ids = ['/'.join(x.split('/')[-3:])[:-4] for x in video_fns]
-            for video_id in video_ids:
-                txt_fn = os.path.join(lrs3_root, video_id+'.txt')
-                label = open(txt_fn).readlines()[0].split(':')[1].strip()
-                labels_total.append(label)
-                video_ids_total.append(video_id)
-    pretrain_csv = os.path.join(lrs3_root, 'short-pretrain.csv')
+    for split in ['train', 'val', 'test']:
+        labels_total = []
+        split_label_list_txt = os.path.join(lrs2_root, f'{split}_label.list')
+        split_file_list_txt = os.path.join(lrs2_base, f'{split}.txt')
+        assert os.path.exists(split_file_list_txt), f"{split_file_list_txt} does not exist"
+        with open(split_file_list_txt, 'r') as f:
+            split_file_list = [x.strip() for x in f.readlines()]
+        for row in tqdm(split_file_list):
+            video_id = os.path.join("main", row.split(' ')[0])
+            txt_fn = os.path.join(lrs2_root, video_id+'.txt')  # ${lrs2}/mvlrs_v1/main/6216465227352090573/00002.txt
+            label = open(txt_fn).readlines()[0].split(':')[1].strip()
+            labels_total.append(label)
+            video_ids_total.append(video_id)
+        with open(split_label_list_txt, 'w') as fo:
+            fo.write('\n'.join(labels_total)+'\n')
+    # Ensures pretrain is followed by train/val/test in main.
+    labels_total = []
+    pretrain_csv = os.path.join(lrs2_root, 'short-pretrain.csv')
     df = read_csv(pretrain_csv)
     for video_id, label in zip(df['id'], df['text']):
         video_ids_total.append(os.path.join('short-pretrain', video_id))
         labels_total.append(label)
-    video_id_fn, label_fn = os.path.join(lrs3_root, 'file.list'), os.path.join(lrs3_root, 'label.list')
+    video_id_fn, label_fn = os.path.join(lrs2_root, 'file.list'), os.path.join(lrs2_root, 'short-pretrain_label.list')
     print(video_id_fn, label_fn)
     with open(video_id_fn, 'w') as fo:
         fo.write('\n'.join(video_ids_total)+'\n')
@@ -225,16 +232,18 @@ def get_file_label(lrs3_root):
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='LRS2 preprocess pretrain dir', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('--lrs2', type=str, help='lrs2 root dir')
+    parser.add_argument('--lrs2', type=str, help='lrs2 root dir containing main and pretrain')
     parser.add_argument('--ffmpeg', type=str, help='path to ffmpeg')
     parser.add_argument('--rank', type=int, help='rank id')
     parser.add_argument('--nshard', type=int, help='number of shards')
     parser.add_argument('--step', type=int, help='Steps (1: split labels, 2: trim video/audio, 3: prep audio for trainval/test, 4: get labels and file list)')
+    parser.add_argument('--data_subdir', default='mvlrs_v1')
     args = parser.parse_args()
+    lrs2_datasubdir = os.path.join(args.lrs2, args.data_subdir)
     if args.step <= 2:
-        trim_pretrain(args.lrs2, args.ffmpeg, args.rank, args.nshard, step=args.step)
+        trim_pretrain(lrs2_datasubdir, args.ffmpeg, args.rank, args.nshard, step=args.step)
     elif args.step == 3:
         print(f"Extracting audio for trainval/test")
-        prep_wav(args.lrs2, args.ffmpeg, args.rank, args.nshard)
+        prep_wav(lrs2_datasubdir, args.ffmpeg, args.rank, args.nshard)
     elif args.step == 4:
-        get_file_label(args.lrs2)
+        get_file_label(lrs2_datasubdir, args.lrs2)
