@@ -47,7 +47,7 @@ def spectral_de_normalize_torch(magnitudes):
 mel_basis = None
 hann_window = None
 def get_mel_basis(sampling_rate, n_fft, num_mels, fmin, fmax, device):
-    mel = librosa_mel_fn(sampling_rate, n_fft, num_mels, fmin, fmax)
+    mel = librosa_mel_fn(sr=sampling_rate, n_fft=n_fft, n_mels=num_mels, fmin=fmin, fmax=fmax)
     mel_basis = torch.from_numpy(mel).float().to(device)
     return mel_basis
 

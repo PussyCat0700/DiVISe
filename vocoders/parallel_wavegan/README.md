@@ -1,0 +1,1 @@
+You need to install from PWG's implementation (https://github.com/kan-bayashi/ParallelWaveGAN) first before using this vocoder.

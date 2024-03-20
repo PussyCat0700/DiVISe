@@ -5,7 +5,7 @@ from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
 from avhubert.avhubert_as_upstream import AVHubertEncoder
 from vocoders.bigvgan.bigvgan_model import BigVGAN
-from constants import BIGVGAN_NO_GRAD, GRIFFINLIM, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD, UNIT_METHODS, UNIT_SPEECH_TOKENIZER_NO_GRAD, UNIT_HIFIGAN_NO_GRAD
+from constants import BIGVGAN_NO_GRAD, GRIFFINLIM, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD, PWG_NO_GRAD, UNIT_METHODS, UNIT_SPEECH_TOKENIZER_NO_GRAD, UNIT_HIFIGAN_NO_GRAD
 from speechtokenizer import SpeechTokenizer
 from utils import init_weights, get_padding, mpd_length_variators, msd_length_variators
 
@@ -187,6 +187,8 @@ class AVHuBERTGenerator(nn.Module):
             self.generator = Generator(hifigenerator_config, mel_dim)
         elif self.generator_mode == BIGVGAN_NO_GRAD:
             self.generator = BigVGAN(hifigenerator_config)
+        elif self.generator_mode == PWG_NO_GRAD:
+            self.generator = nn.Identity()  # should be initialized and loaded by exterior module.
         elif self.generator_mode in UNIT_METHODS:
             n_units = hifigenerator_config.k
             if self.with_extra_padding_unit:
@@ -205,7 +207,7 @@ class AVHuBERTGenerator(nn.Module):
         encoder_out = self.frontend_with_encoder(avhubert_input, prosody_targets, unit_target, hu_target, mel_masks)
         downsampled_encoder_out = None
         if self.with_generator:
-            if self.generator_mode in [HIFIGAN_NO_GRAD, BIGVGAN_NO_GRAD]:
+            if self.generator_mode in [HIFIGAN_NO_GRAD, BIGVGAN_NO_GRAD, PWG_NO_GRAD]:
                 with torch.inference_mode():
                     wav_generated = self.generator(encoder_out["melspec_out"])  # generator takes in tensor shaped (bs, mellen, num_mel)
             elif self.generator_mode == HIFIGAN_WITH_GRAD:

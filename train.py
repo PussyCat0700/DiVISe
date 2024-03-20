@@ -10,10 +10,11 @@ from transformers import Wav2Vec2ForCTC
 import torchmetrics
 from tqdm import tqdm
 from constants import GRIFFINLIM,\
-    GENERATOR_METHODS, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD, BIGVGAN_NO_GRAD,\
+    GENERATOR_METHODS, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD, BIGVGAN_NO_GRAD, MEL_VOCODER_METHODS, PWG_NO_GRAD,\
     UNIT_METHODS, UNIT_SPEECH_TOKENIZER_NO_GRAD, UNIT_HIFIGAN_NO_GRAD, UNIT_SOFT
 
 from dataset import load_avhubert_config, load_dataset, get_dataloader
+from vocoders.parallel_wavegan.pwg_model import PWGModel
 warnings.simplefilter(action='ignore', category=FutureWarning)
 import itertools
 import os
@@ -90,6 +91,8 @@ def train(rank, a, h, avhubert_config):
                 run_name += '_hifigan'
             elif a.bigvgan_ckpt is not None:
                 run_name += '_bigvgan'
+            elif a.pwg_ckpt is not None:
+                run_name += '_pwg'
         wandb.init(project=proj_name, name=run_name, sync_tensorboard=True)
     if h.num_gpus > 1:
         init_process_group(backend=h.dist_config['dist_backend'], init_method=h.dist_config['dist_url'],
@@ -104,6 +107,8 @@ def train(rank, a, h, avhubert_config):
             generator_mode = HIFIGAN_NO_GRAD
         if a.bigvgan_ckpt is not None:
             generator_mode = BIGVGAN_NO_GRAD
+        if a.pwg_ckpt is not None:
+            generator_mode = PWG_NO_GRAD
         if h.unit_name is not None:
             generator_mode = h.unit_method
     elif a.train_mode == VIDEO2WAV_MODE:
@@ -174,7 +179,7 @@ def train(rank, a, h, avhubert_config):
         mpd.load_state_dict(unwrap_module_discriminator(hifigan_weight["discriminator"]["model"], "mpd"))
         msd.load_state_dict(unwrap_module_discriminator(hifigan_weight["discriminator"]["model"], "msd"))
     # TODO: It is really unreasonable to keep all training states in state_dict_do, and it is still here just for compatibility.
-    override_vocoder = a.train_mode == VIDEO2MEL_MODE and (a.hifigan_ckpt is not None or a.bigvgan_ckpt is not None)
+    override_vocoder = a.train_mode == VIDEO2MEL_MODE and generator_mode in MEL_VOCODER_METHODS
     if a.train_mode == VIDEO2WAV_MODE:
         if cp_g is None or cp_do is None:
             state_dict_do = None
@@ -208,6 +213,11 @@ def train(rank, a, h, avhubert_config):
         if a.bigvgan_ckpt is not None:
             bigvgan_weight = torch.load(a.bigvgan_ckpt, map_location=device)
             generator.generator.load_state_dict(bigvgan_weight["generator"])
+        if a.pwg_ckpt is not None:
+            generator.generator = PWGModel(a.pwg_ckpt).to(device)
+            generator.generator.eval()
+            for param in generator.generator.parameters():
+                param.requires_grad = False
 
     if h.num_gpus > 1:
         generator = DistributedDataParallel(generator, device_ids=[rank], find_unused_parameters=True).to(device)
@@ -830,6 +840,7 @@ def main():
     parser.add_argument('--hifigan_ckpt', help='if specified, will load pretrained weight onto HiFi-GAN in v2w mode'\
         ' as part of the model or in v2m mode (with gradient) as mel-to-audio converter in v2w mode(without gradient)')
     parser.add_argument('--bigvgan_ckpt', help='if specified, will load BigVGAN as mel-to-audio converter in v2w mode.')
+    parser.add_argument('--pwg_ckpt', help='if specified, will load Parallel WaveGAN (PWG) as mel-to-audio converter in v2w mode.')
     parser.add_argument('--stdout_interval', default=5, type=int)
     parser.add_argument('--summary_interval', default=100, type=int)
     parser.add_argument('--wandb', action='store_true')
@@ -859,7 +870,7 @@ def main():
     if h.prosody_type is not None:
         assert h.norm_mode in ['original', 'meanvar'], f"{h.norm_mode=} which is not a valid way to normalize prosody."
     avhubert_config = load_avhubert_config(a.avhubert_config)
-    if '433h_data' in avhubert_config["task"].data:
+    if '433h_data' in avhubert_config["task"].data or '224h_data' in avhubert_config["task"].data:
         h.total_updates*=8
         h.frozen_steps*=8    
     if a.train_mode == VIDEO2MEL_MODE:
