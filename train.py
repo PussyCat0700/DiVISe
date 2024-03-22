@@ -199,7 +199,10 @@ def train(rank, a, h, avhubert_config):
             last_epoch = -1
         else:
             state_dict_g = load_checkpoint(cp_g, device)
-            generator.load_full_model_weight(state_dict_g['generator'], ignore_generator=override_vocoder)
+            if h.unit_name is not None and h.unit_method in UNIT_METHODS:
+                generator.load_state_dict(state_dict_g['generator'])
+            else:
+                generator.load_full_model_weight(state_dict_g['generator'], ignore_generator=override_vocoder)
             steps = state_dict_g['steps'] + 1
             last_epoch = state_dict_g['epoch']
             best_metrics = state_dict_g['metrics']
