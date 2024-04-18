@@ -1,109 +1,97 @@
-# HiFi-GAN: Generative Adversarial Networks for Efficient and High Fidelity Speech Synthesis
+# DiViSe: Direct Visual-Input Speech Synthesis
 
-## hyperparameters that cannot change in hifigan
-- num_mels:80
-- hop_size:160 (for 16kHz to stay at 100 frame rate)
-
-### Jungil Kong, Jaehyeon Kim, Jaekyoung Bae
-
-In our [paper](https://arxiv.org/abs/2010.05646), 
-we proposed HiFi-GAN: a GAN-based model capable of generating high fidelity speech efficiently.<br/>
-We provide our implementation and pretrained models as open source in this repository.
+We proposed DiViSe, a Video-to-Speech Synthesis framework that resynthesizes audio waveforms from silent videos. The code and weights are open-sourced in this repository for reproduction purposes. Samples generated with HiFi-GAN and Griffin-Lim are provided in supplementary materials too.
 
 **Abstract :**
-Several recent work on speech synthesis have employed generative adversarial networks (GANs) to produce raw waveforms. 
-Although such methods improve the sampling efficiency and memory usage, 
-their sample quality has not yet reached that of autoregressive and flow-based generative models. 
-In this work, we propose HiFi-GAN, which achieves both efficient and high-fidelity speech synthesis. 
-As speech audio consists of sinusoidal signals with various periods, 
-we demonstrate that modeling periodic patterns of an audio is crucial for enhancing sample quality. 
-A subjective human evaluation (mean opinion score, MOS) of a single speaker dataset indicates that our proposed method 
-demonstrates similarity to human quality while generating 22.05 kHz high-fidelity audio 167.9 times faster than 
-real-time on a single V100 GPU. We further show the generality of HiFi-GAN to the mel-spectrogram inversion of unseen 
-speakers and end-to-end speech synthesis. Finally, a small footprint version of HiFi-GAN generates samples 13.4 times 
-faster than real-time on CPU with comparable quality to an autoregressive counterpart.
+The field of Video-to-Speech (V2S) synthesis aims to convert silent lip movements into audible speech using audio-visual data. Traditional V2S methods required the incorporation of speaker information, risking potential knowledge leakage. This study introduces a novel V2S synthesis technique utilizing the pretrained audio-visual model for direct Mel-spectrogram prediction without requiring any input beyond silent video during both training and inference. When coupled with an off-the-shelf ASR system, the audio produced by our approach achieves the lowest Word Error Rate (WER) compared to other existing V2S synthesis methods that predict Mel-spectrograms, thereby demonstrating the high intelligibility of the generated audio. Additionally, this method sets a new state-of-the-art in STOI and ESTOI metrics on the LRS2 and LRS3 datasets. We tested conditions where constraints are imposed, such as operating in low-resource settings or employing models with reduced sizes, where our method still proved to show strong performance relative to existing approaches. Our approach offers a promising direction toward accurate speech reconstruction from silent videos. Code and model parameters will be made publicly accessible upon the acceptance of this paper.
 
-Visit our [demo website](https://jik876.github.io/hifi-gan-demo/) for audio samples.
+## What we will open source
 
+1. DiViSe implementation and data preprocessing scripts (This repo)
+1. ReVISE implementation (This repo)
+1. Scripts to train vocoders on resampled LJSpeech (16kHz). This is given in our 16k-hifigan repo and includes:
+    - resampling script (Thanks to [bshall's implementation](https://github.com/bshall/hifigan))
+    - training scripts for:
+        - HiFi-GAN
+        - Unit-HiFiGAN (Required for ReVISE to generate audio)
+1. Generated video examples (examples.zip).
+1. (In the future) Pretrained weights listed in Section **Pretrained Model**.
 
 ## Pre-requisites
-1. Python >= 3.6
-2. Clone this repository.
-3. Install python requirements. Please refer [requirements.txt](requirements.txt)
-4. Download and extract the [LJ Speech dataset](https://keithito.com/LJ-Speech-Dataset/).
-And move all wav files to `LJSpeech-1.1/wavs`
+1. Python 3.8
+1. Several NVIDIA GPUs (RTX 3090 or 4090 will be fine in my case). 
+    -  4 are required to run low-resource setting.
+    -  8 are required to run full-resource setting.
+    - Please use the number of GPUs strictly as the number of updates will differ from my training setting if a different setting of GPUs is set. This is because currently I have only set the number of updates **per GPU** in my current setting.
+1. Install python requirements. Please refer to [requirements.txt](requirements.txt).
+1. Have a pretrained vocoder: 
+    - DiViSe: This is optional. Griffin-Lim is always enabled even if no vocoder is used.
+    - ReVISE: You should have a pretrained Unit-HiFiGAN model.
 
+## Data Preparation
+1. (LRS3) Please refer to [AV-HuBERT](https://github.com/facebookresearch/av_hubert/tree/258fb50e155134eec2c4b49c2ae8de267075fd18/avhubert/preparation).
+1. (LRS2) See [dataset/lrs2/README.md](dataset/lrs2/README.md) for instructions. Actually this is identical to AV-HuBERT's preprocessing except the modifications we made to suit LRS2's file structure.
 
-## Training
-```
-python train.py --config config_v1.json
-```
-To train V2 or V3 Generator, replace `config_v1.json` with `config_v2.json` or `config_v3.json`.<br>
-Checkpoints and copy of the configuration file are saved in `cp_hifigan` directory by default.<br>
-You can change the path by adding `--checkpoint_path` option.
-
-Validation loss during training with V1 generator.<br>
-![validation loss](./validation_loss.png)
+Guidance for LJSpeech preprocessing is given in our 16k-hifigan repo.
 
 ## Pretrained Model
-You can also use pretrained models we provide.<br/>
-[Download pretrained models](https://drive.google.com/drive/folders/1-eEYTB5Av9jNql0WGBlRoi-WH2J7bp5Y?usp=sharing)<br/> 
-Details of each folder are as in follows:
+We plan to provide pretrained weights on Huggingface after anonymous period.
 
-|Folder Name|Generator|Dataset|Fine-Tuned|
+The weights we plan to provide are as follows for your reference. If you would like to see any other pretrained weights, just let me know and I'll let them on shelf.
+
+### V2S Models
+|Model|Dataset|Updates (per GPU)|# of GPUs used|
 |------|---|---|---|
-|LJ_V1|V1|LJSpeech|No|
-|LJ_V2|V2|LJSpeech|No|
-|LJ_V3|V3|LJSpeech|No|
-|LJ_FT_T2_V1|V1|LJSpeech|Yes ([Tacotron2](https://github.com/NVIDIA/tacotron2))|
-|LJ_FT_T2_V2|V2|LJSpeech|Yes ([Tacotron2](https://github.com/NVIDIA/tacotron2))|
-|LJ_FT_T2_V3|V3|LJSpeech|Yes ([Tacotron2](https://github.com/NVIDIA/tacotron2))|
-|VCTK_V1|V1|VCTK|No|
-|VCTK_V2|V2|VCTK|No|
-|VCTK_V3|V3|VCTK|No|
-|UNIVERSAL_V1|V1|Universal|No|
+|DiViSe|LRS3|45000|8|
+|DiViSe-BASE|LRS3|11250|4|
+|DiViSe|LRS2|45000|8|
+|DiViSe-BASE|LRS2|11250|4|
+|ReVISE (Our Implementation)|LRS2|45000|8|
 
-We provide the universal model with discriminator weights that can be used as a base for transfer learning to other datasets.
+### Vocoders
+All vocoders are trained on resampled version (16kHz) of LJSpeech Dataset. See [vocoders/README.md](vocoders/README.md)
+|Models|
+|:------:|
+|HiFiGAN|
+|BigVGAN-base|
+|Parallel WaveGAN (PWG)|
+|Unit-HiFiGAN (For ReVISE implementation)|
 
-## Fine-Tuning
-1. Generate mel-spectrograms in numpy format using [Tacotron2](https://github.com/NVIDIA/tacotron2) with teacher-forcing.<br/>
-The file name of the generated mel-spectrogram should match the audio file and the extension should be `.npy`.<br/>
-Example:
-    ```
-    Audio File : LJ001-0001.wav
-    Mel-Spectrogram File : LJ001-0001.npy
-    ```
-2. Create `ft_dataset` folder and copy the generated mel-spectrogram files into it.<br/>
-3. Run the following command.
-    ```
-    python train.py --fine_tuning True --config config_v1.json
-    ```
-    For other command line options, please refer to the training section.
+Griffin-Lim is already implemented in this repository.
 
+## Training
 
-## Inference from wav file
-1. Make `test_files` directory and copy wav files into the directory.
-2. Run the following command.
-    ```
-    python inference.py --checkpoint_file [generator checkpoint file path]
-    ```
-Generated wav files are saved in `generated_files` by default.<br>
-You can change the path by adding `--output_dir` option.
+### Configuration Setup
+- conf/avhubert:
+    - You will need to modify the config file you need to run. Update `task:data` to your preprocessed data directory.
+    - Either preprocessed dir of LRS3 and LRS2 will be fine to fit `task:data`.
+        - For low-resource setting, fit `30h` dir of your preprocessed dataset.
+        - For full-resource setting, fit `433h` dir / `224h` dir of your preprocessed dataset.
 
+- conf/hifigan:
+    - For DiViSe, do noting.
+    - For ReVISE implementation, modify `unit_name`, `valid_unit_name` and `test_unit_name` and `k` to your specification. See our 16k-hifigan repo if you are not sure how to fill them.
+    - Normally you do not need to modify `total_updates`. Just make sure you're using the right number of GPUs.
 
-## Inference for end-to-end speech synthesis
-1. Make `test_mel_files` directory and copy generated mel-spectrogram files into the directory.<br>
-You can generate mel-spectrograms using [Tacotron2](https://github.com/NVIDIA/tacotron2), 
-[Glow-TTS](https://github.com/jaywalnut310/glow-tts) and so forth.
-2. Run the following command.
-    ```
-    python inference_e2e.py --checkpoint_file [generator checkpoint file path]
-    ```
-Generated wav files are saved in `generated_files_from_mel` by default.<br>
-You can change the path by adding `--output_dir` option.
+Script references are given as listed below. Note that number of GPUs needed must match to give reproducable results.
+
+### Evironment Variables
+We are taking HiFi-GAN as our default vocoder here. One may also try BigVGAN and PWG with `--bigvgan_ckpt` and `--pwg_ckpt`.
+```
+your_ckpt=[REPLACE HERE]
+your_avhb_cfg=[REPLACE HERE]
+your_avhubert_ckpt=[REPLACE HERE]  # base_lrs3_iter5.pt for BASE setting and large_vox_iter5.pt for LARGE setting (default).
+your_hifigan_ckpt=[REPLACE HERE]  # One can use more vocoders other than HiFi-GAN for DiViSe. See train.py's argparser for more information. For ReVISE, ensure you're using Unit-HiFiGAN.
+```
+### Training Commands
+
+`--hifigan_ckpt` is optional for DiViSe. You may also swap to `--bigvgan_ckpt` and `--pwg_ckpt` for DiViSe.
+|Command|Model|
+|----|---|
+`python train.py --checkpoint_path output/baseline/$your_ckpt --hifigan_config conf/hifigan/video2speech_template.json --avhubert_config conf/avhubert/${your_avhb_cfg}.yaml --avhubert_ckpt $your_avhubert_ckpt --hifigan_ckpt $your_hifigan_ckpt --wandb`|DiViSe|
+`python train.py --checkpoint_path output/revise/$your_ckpt --hifigan_config conf/hifigan/video2speech_revise_original.json --avhubert_config conf/avhubert/${your_avhb_cfg}.yaml --avhubert_ckpt $your_avhubert_ckpt --hifigan_ckpt $your_hifigan_ckpt --wandb`|ReVISE|
 
 
 ## Acknowledgements
-We referred to [WaveGlow](https://github.com/NVIDIA/waveglow), [MelGAN](https://github.com/descriptinc/melgan-neurips) 
-and [Tacotron2](https://github.com/NVIDIA/tacotron2) to implement this.
+Special thanks to [HiFi-GAN](https://github.com/jik876/hifi-gan) and [AV-HuBERT](https://github.com/facebookresearch/av_hubert/), where this repository is built upon. We also appreciate all other works mentioned in this repository.
 

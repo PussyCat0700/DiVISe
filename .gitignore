@@ -17,3 +17,6 @@ do_*
 audio/*
 *.wav
 *.bin
+*.csv
+*.zip
+*.mp4
