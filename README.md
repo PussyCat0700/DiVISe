@@ -70,7 +70,7 @@ Griffin-Lim is already implemented in this repository.
 
 - conf/hifigan:
     - For DiViSe, do noting.
-    - For ReVISE implementation, modify `unit_name`, `valid_unit_name` and `test_unit_name` and `k` to your specification. See our 16k-hifigan repo if you are not sure how to fill them.
+    - For ReVISE implementation, modify `unit_name`, `valid_unit_name` and `test_unit_name` and `k` to your specification. One should refer to [hubert/README.md](hubert/README.md) first before training ReVISE.
     - Normally you do not need to modify `total_updates`. Just make sure you're using the right number of GPUs.
 
 Script references are given as listed below. Note that number of GPUs needed must match to give reproducable results.
