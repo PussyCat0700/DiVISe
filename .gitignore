@@ -20,3 +20,7 @@ audio/*
 *.csv
 *.zip
 *.mp4
+*.sh
+*.job
+*.err
+*.out

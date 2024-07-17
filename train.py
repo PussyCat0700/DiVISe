@@ -148,12 +148,14 @@ def train(rank, a, h, avhubert_config):
         hu_dict = {
             "hubert_hiddden":h.hubert_hidden  # 768 for hubert base
         }
+    use_farl = a.farl_ckpt is not None
     generator = AVHuBERTGenerator(hifigenerator_config=h,
                                   avhubert_model_config=avhubert_config["model"], 
                                   prosody_minmax_dict=prosody_minmax_dict,
                                   unit_dict=unit_dict,
                                   hu_dict=hu_dict,
                                   generator_mode=generator_mode,
+                                  use_farl=use_farl,
                                   ).to(device)
     generator_module = generator
     mpd = MultiPeriodDiscriminator().to(device)
@@ -170,6 +172,8 @@ def train(rank, a, h, avhubert_config):
 
     if a.avhubert_ckpt is not None:
         generator.load_pretrained_avhubertmodel(a.avhubert_ckpt, map_location=device)
+    if a.farl_ckpt is not None:
+        generator.load_pretrained_farlmodel(a.farl_ckpt, map_location=device)
     if a.hifigan_ckpt is not None and a.train_mode == VIDEO2WAV_MODE:
         # hifigan ckpt might be updated in training with 2wav mode
         hifigan_weight = torch.load(a.hifigan_ckpt, map_location=device)
@@ -178,8 +182,6 @@ def train(rank, a, h, avhubert_config):
             ))
         mpd.load_state_dict(unwrap_module_discriminator(hifigan_weight["discriminator"]["model"], "mpd"))
         msd.load_state_dict(unwrap_module_discriminator(hifigan_weight["discriminator"]["model"], "msd"))
-    # TODO: It is really unreasonable to keep all training states in state_dict_do, and it is still here just for compatibility.
-    override_vocoder = a.train_mode == VIDEO2MEL_MODE and generator_mode in MEL_VOCODER_METHODS
     if a.train_mode == VIDEO2WAV_MODE:
         if cp_g is None or cp_do is None:
             state_dict_do = None
@@ -199,28 +201,28 @@ def train(rank, a, h, avhubert_config):
             last_epoch = -1
         else:
             state_dict_g = load_checkpoint(cp_g, device)
+            # TODO this is redundant but works like a trap. Careful if you want to lint them
             if h.unit_name is not None and h.unit_method in UNIT_METHODS:
                 generator.load_state_dict(state_dict_g['generator'])
             else:
-                generator.load_full_model_weight(state_dict_g['generator'], ignore_generator=override_vocoder)
+                generator.load_full_model_weight(state_dict_g['generator'], ignore_generator=True)
             steps = state_dict_g['steps'] + 1
             last_epoch = state_dict_g['epoch']
             best_metrics = state_dict_g['metrics']
-    if override_vocoder:
-        if a.hifigan_ckpt is not None:
-            # hifigan ckpt is not supposed to be updated in training with 2mel mode
-            hifigan_weight = torch.load(a.hifigan_ckpt, map_location=device)
-            generator.generator.load_state_dict(unwrap_module_generator(
-                hifigan_weight["generator"]["model"], ignore_conv_pre=a.train_mode==VIDEO2WAV_MODE,
-                ))
-        if a.bigvgan_ckpt is not None:
-            bigvgan_weight = torch.load(a.bigvgan_ckpt, map_location=device)
-            generator.generator.load_state_dict(bigvgan_weight["generator"])
-        if a.pwg_ckpt is not None:
-            generator.generator = PWGModel(a.pwg_ckpt).to(device)
-            generator.generator.eval()
-            for param in generator.generator.parameters():
-                param.requires_grad = False
+    if a.hifigan_ckpt is not None:
+        # hifigan ckpt is not supposed to be updated in training with 2mel mode
+        hifigan_weight = torch.load(a.hifigan_ckpt, map_location=device)
+        generator.generator.load_state_dict(unwrap_module_generator(
+            hifigan_weight["generator"]["model"], ignore_conv_pre=a.train_mode==VIDEO2WAV_MODE,
+            ))
+    if a.bigvgan_ckpt is not None:
+        bigvgan_weight = torch.load(a.bigvgan_ckpt, map_location=device)
+        generator.generator.load_state_dict(bigvgan_weight["generator"])
+    if a.pwg_ckpt is not None:
+        generator.generator = PWGModel(a.pwg_ckpt).to(device)
+        generator.generator.eval()
+        for param in generator.generator.parameters():
+            param.requires_grad = False
 
     if h.num_gpus > 1:
         generator = DistributedDataParallel(generator, device_ids=[rank], find_unused_parameters=True).to(device)
@@ -268,6 +270,7 @@ def train(rank, a, h, avhubert_config):
             "st_type":h.st_type,
             "km_pad_class_idx": h.k,
             "generator_mode":generator_mode,
+            "with_image_tsv": use_farl,
         }
     trainset = load_dataset("train", avhubert_config["task"], **dataloading_kwargs)
     train_loader, train_sampler = get_dataloader(trainset, 
@@ -357,6 +360,9 @@ def train(rank, a, h, avhubert_config):
                 """
                 avhubert_source_batch = batch["net_input"]["source"]
                 y = avhubert_source_batch["audio"].to(device)
+                image_input = avhubert_source_batch["images"]
+                if image_input is not None:
+                    image_input = image_input.to(device)
                 mel_padding_mask = batch["net_input"]["padding_mask_mel"].to(device)
                 wav_padding_mask = batch["net_input"]["padding_mask_wav"].to(device)
                 y_dict = mel_spectrogram_and_energy(y, h.n_fft, h.num_mels,
@@ -406,7 +412,10 @@ def train(rank, a, h, avhubert_config):
                         hu_target["hubert_representation"] = avhubert_source_batch["hu"].to(device)
                         hu_target["src_key_padding_mask"] = kmeans_mask
 
-                generator_out = generator(avhubert_source_batch["video"].to(device), prosody_target, unit_target, hu_target, ~mel_padding_mask)
+                generator_out = generator(
+                    avhubert_source_batch["video"].to(device), 
+                    prosody_target, unit_target, hu_target, image_input, 
+                    ~mel_padding_mask)
                 y_g_avhubert_mel = generator_out["melspec_out"]
                 if h.prosody_type is not None:
                     pitch_predictions = generator_out["prosody"]["pitch_pred"]
@@ -707,6 +716,9 @@ def validate(
         for j, batch in enumerate(pbar):
             avhubert_source_batch = batch["net_input"]["source"]
             y = avhubert_source_batch["audio"].to(device)
+            image_input = avhubert_source_batch["images"]
+            if image_input is not None:
+                image_input = image_input.to(device)
             gt_texts = [x.strip() for x in batch["target"]]
             mel_padding_mask = batch["net_input"]["padding_mask_mel"].to(device)
             wav_padding_mask = batch["net_input"]["padding_mask_wav"].to(device)
@@ -734,7 +746,9 @@ def validate(
                         unit_target["kmeans_mask"] = ~kmeans_mask
                     if h.hu_repr_name is not None:
                         hu_target["src_key_padding_mask"] = kmeans_mask
-            generator_out = generator(avhubert_source_batch["video"].to(device), prosody_target, unit_target, hu_target, ~mel_padding_mask)
+            generator_out = generator(avhubert_source_batch["video"].to(device), 
+                                      prosody_target, unit_target, hu_target, image_input,
+                                      ~mel_padding_mask)
             y_g_avhubert_mel = generator_out["melspec_out"]
             y_g_hat = None
             y_g_hat_vc = None
@@ -844,6 +858,7 @@ def main():
         ' as part of the model or in v2m mode (with gradient) as mel-to-audio converter in v2w mode(without gradient)')
     parser.add_argument('--bigvgan_ckpt', help='if specified, will load BigVGAN as mel-to-audio converter in v2w mode.')
     parser.add_argument('--pwg_ckpt', help='if specified, will load Parallel WaveGAN (PWG) as mel-to-audio converter in v2w mode.')
+    parser.add_argument('--farl_ckpt', help='if specified, will apply farl to boost speaker identity information')
     parser.add_argument('--stdout_interval', default=5, type=int)
     parser.add_argument('--summary_interval', default=100, type=int)
     parser.add_argument('--wandb', action='store_true')

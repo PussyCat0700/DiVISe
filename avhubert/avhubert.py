@@ -383,7 +383,7 @@ class AVHubertModel(BaseFairseqModel):
         feature = res["features"] if ret_conv else res["x"]
         return feature, res["padding_mask"]
 
-    def extract_finetune_with_feature(self, source, padding_mask=None, mask=False, ret_conv=False, output_layer=None):
+    def extract_finetune_with_feature(self, source, speaker_params=None, padding_mask=None, mask=False, ret_conv=False, output_layer=None):
         src_audio, src_video = source['audio'], source['video']
         if mask and self.masking_type == 'input':
             src_video, mask_indices_video = self.apply_input_mask(src_video, padding_mask)
@@ -407,7 +407,11 @@ class AVHubertModel(BaseFairseqModel):
         elif self.modality_fuse == 'add':
             features = features_audio + features_video
 
-        features = features.transpose(1, 2)
+        features = features.transpose(1, 2)  # [B, T, F]
+        # speaker_params (optional): (1, 1, D), float
+        if speaker_params is not None:
+            B = features.shape[0]
+            features = torch.cat([speaker_params.expand(B, -1, -1), features], dim=1)  # [B, 1+T, F]
         features = self.layer_norm(features)
         unmasked_features = features.clone()
 

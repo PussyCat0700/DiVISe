@@ -1,4 +1,3 @@
-from ast import parse
 import json
 import logging
 from tqdm import tqdm
@@ -10,7 +9,7 @@ logging.getLogger(__name__)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--avhubert_config", default="conf/avhubert/base_avhubert_30h.yaml", help='replace with your config file')
+    parser.add_argument("--avhubert_config", default="conf/avhubert/large_avhubert.yaml", help='replace with your config file')
     parser.add_argument("--hifigan_config", default="conf/hifigan/video2speech_template.json", help='config parts on dataset loading will not take effect in this script')
     parser.add_argument("--pitch_type")
     parser.add_argument("--km")
@@ -30,6 +29,8 @@ if __name__ == '__main__':
             "km_name":args.km,
             "hu_name":args.hu_name,
             "st_type":args.st_type,
+            "with_image_tsv":True,
+            "with_text": False,
         }
         if "train" != split:
             # kwargs.update({

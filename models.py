@@ -1,3 +1,4 @@
+import clip
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
@@ -169,13 +170,14 @@ class SpeechTokenizerGenerator(nn.Module):
         
     
 class AVHuBERTGenerator(nn.Module):
-    def __init__(self, hifigenerator_config, avhubert_model_config, prosody_minmax_dict, unit_dict, hu_dict, generator_mode:str=GRIFFINLIM) -> None:
+    def __init__(self, hifigenerator_config, avhubert_model_config, prosody_minmax_dict, unit_dict, hu_dict, generator_mode:str=GRIFFINLIM, use_farl=False) -> None:
         super().__init__()
         # Intuitively I think generating mel-spectrograms after conformer will be better regardless of generator.
         # To load runs done by previous commits, set mel_before_conformer to True.
         self.early_return = generator_mode in UNIT_METHODS
         self.frontend_with_encoder = AVHubertEncoder(avhubert_model_config, hifigenerator_config.num_mels, prosody_minmax_dict=prosody_minmax_dict, unit_dict=unit_dict, hu_dict=hu_dict, mel_before_conformer=False, early_return=self.early_return)
         self.generator_mode = generator_mode
+        self.use_farl = use_farl
         self.with_generator = generator_mode != GRIFFINLIM
         self.with_extra_padding_unit = self.generator_mode != UNIT_SPEECH_TOKENIZER_NO_GRAD
         attention_dim = self.frontend_with_encoder.attention_dim
@@ -201,10 +203,21 @@ class AVHuBERTGenerator(nn.Module):
             self.generator.eval()
             for param in self.generator.parameters():
                 param.requires_grad = False
+        if self.use_farl:
+            self.farl_model, _ = clip.load("ViT-B/16")
+            self.farl_proj = nn.Linear(512, 1024)
+            for param in self.farl_model.parameters():
+                param.requires_grad = False
     
-    def forward(self, video, prosody_targets, unit_target, hu_target, mel_masks=None):
+    def forward(self, video, prosody_targets, unit_target, hu_target, farl_img_input=None, mel_masks=None):
         avhubert_input = {"video": video, "audio": None,}
         encoder_out = self.frontend_with_encoder(avhubert_input, prosody_targets, unit_target, hu_target, mel_masks)
+        if self.use_farl:
+            with torch.no_grad():
+                farl_output = self.farl_model.encode_image(farl_img_input)
+            # TODO suit not only early return
+            farl_feature = self.farl_proj(farl_output.float().unsqueeze(1))
+            encoder_out = encoder_out + farl_feature
         downsampled_encoder_out = None
         if self.with_generator:
             if self.generator_mode in [HIFIGAN_NO_GRAD, BIGVGAN_NO_GRAD, PWG_NO_GRAD]:
@@ -247,6 +260,11 @@ class AVHuBERTGenerator(nn.Module):
         avhubert_weight = torch.load(pretrained_avhubert_path, map_location=map_location)['model']
         #  label_embs_concat and final_proj will not be used in feature extraction.
         self.frontend_with_encoder.avhubert_model.load_state_dict(avhubert_weight)
+        
+    def load_pretrained_farlmodel(self, pretrained_farl_path:str, map_location):
+        self.farl_model = self.farl_model.to(map_location)
+        farl_state=torch.load(pretrained_farl_path) # you can download from https://github.com/FacePerceiver/FaRL#pre-trained-backbones
+        self.farl_model.load_state_dict(farl_state["state_dict"],strict=False)
     
     def load_full_model_weight(self, state_dict, ignore_generator=False):
         state_dict = {k:v for k,v in state_dict.items() if not k.startswith('generator')}
