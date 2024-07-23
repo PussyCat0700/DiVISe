@@ -47,10 +47,8 @@ class EERMetric:
 
 def calc_cosine_similarity(embeddings):  
     # Assuming embeddings is your tensor of shape [2, B, C]
-    # Normalize embeddings along the last dimension (C)
-    normalized_embeddings = F.normalize(embeddings, p=2, dim=-1)
     # Compute cosine similarity between embeddings[0] and embeddings[1]
-    cos_sim = F.cosine_similarity(normalized_embeddings[0], normalized_embeddings[1], dim=-1)
+    cos_sim = F.cosine_similarity(embeddings[0], embeddings[1], dim=-1)
     return cos_sim
 
 

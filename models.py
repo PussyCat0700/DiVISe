@@ -209,7 +209,7 @@ class AVHuBERTGenerator(nn.Module):
             for param in self.farl_model.parameters():
                 param.requires_grad = False
     
-    def forward(self, video, prosody_targets, unit_target, hu_target, farl_img_input=None, mel_masks=None):
+    def forward(self, video, prosody_targets=None, unit_target=None, hu_target=None, farl_img_input=None, mel_masks=None):
         avhubert_input = {"video": video, "audio": None,}
         encoder_out = self.frontend_with_encoder(avhubert_input, prosody_targets, unit_target, hu_target, mel_masks)
         if self.use_farl:

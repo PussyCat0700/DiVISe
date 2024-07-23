@@ -67,8 +67,17 @@ def tsv_way(split):
 
 
 if __name__ == '__main__':
-    for split in ['trainval', 'test', 'short-pretrain']:
-        process_videos_walkdir(f'/data1/yfliu/lrs3/{split}', f'/data1/yfliu/lrs3/frames/{split}')
-    tsv_way("train")
-    tsv_way("valid")
-    tsv_way("test")
+    def make_lrs3_tsv():
+        for split in ['trainval', 'test', 'short-pretrain']:
+            process_videos_walkdir(f'/data1/yfliu/lrs3/{split}', f'/data1/yfliu/lrs3/frames/{split}')
+        tsv_way("train")
+        tsv_way("valid")
+        tsv_way("test")
+    
+    def make_vox2_tsv():
+        tsv_indir = '/data1/yfliu/voxceleb2/all_data/test.tsv'
+        outputbase_dir = "/data1/yfliu/voxceleb2/frames"
+        output_tsv = '/data1/yfliu/voxceleb2/all_data/frame_test.tsv'
+        save_tsv(tsv_indir, outputbase_dir, output_tsv)
+
+    make_vox2_tsv()

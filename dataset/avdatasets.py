@@ -58,7 +58,8 @@ def load_audio_visual_simple(manifest_path, max_keep, min_keep, vid_dict=False, 
         with open(image_tsv_path, 'r') as f:
             image_lines = [x.strip() for x in f.readlines()]
             image_lines = image_lines[1:]
-        assert tot == len(image_lines), f"{tot=} does not match {len(image_lines)=}"
+        assert tot == len(image_lines), f"{tot=} does not match {len(image_lines)=}. "\
+            f"Got {n_short=} and {n_long=}"
         for ind in inds:
             images.append(image_lines[ind])
     logger.info(

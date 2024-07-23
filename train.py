@@ -1,5 +1,4 @@
 import math
-import editdistance
 import logging
 import random
 import sys
@@ -10,10 +9,13 @@ from transformers import Wav2Vec2ForCTC
 import torchmetrics
 from tqdm import tqdm
 from constants import GRIFFINLIM,\
-    GENERATOR_METHODS, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD, BIGVGAN_NO_GRAD, MEL_VOCODER_METHODS, PWG_NO_GRAD,\
-    UNIT_METHODS, UNIT_SPEECH_TOKENIZER_NO_GRAD, UNIT_HIFIGAN_NO_GRAD, UNIT_SOFT
+    GENERATOR_METHODS, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD, BIGVGAN_NO_GRAD, PWG_NO_GRAD,\
+    UNIT_METHODS, UNIT_SPEECH_TOKENIZER_NO_GRAD, UNIT_SOFT
 
+from contrastive.metrics import calc_cosine_similarity, EERMetric
 from dataset import load_avhubert_config, load_dataset, get_dataloader
+from dataset.dataset_loading import load_dataset_eer
+import speaker_encoder.inference as corentinJEncoder
 from vocoders.parallel_wavegan.pwg_model import PWGModel
 warnings.simplefilter(action='ignore', category=FutureWarning)
 import itertools
@@ -282,6 +284,7 @@ def train(rank, a, h, avhubert_config):
                                                 seeder=DataLoaderSeeder(h.seed),
                                                 )
 
+    sw = None
     if rank == 0:
         kwargs = {
             "st_type": h.st_type
@@ -649,7 +652,16 @@ def train(rank, a, h, avhubert_config):
                 logging.info('Time taken for epoch {} is {} sec\n'.format(epoch + 1, int(time.time() - start)))
             # End of a train epoch
     # Ultimate test
+    print('testing eer.')
+    test_eer(
+        model=generator,
+        device=device,
+        args=a,
+        h=h,
+        sw=sw,
+    )
     if rank == 0:
+        print('testing wer and so on.')
         test_args = {
                 "generator":generator.module if h.num_gpus > 1 else generator,
                 "w2v_processor":w2v_processor,
@@ -665,6 +677,8 @@ def train(rank, a, h, avhubert_config):
                 "unit_key":unit_key,
             }
         validate(**test_args)
+
+
 def validate(
     generator:AVHuBERTGenerator,
     w2v_processor,
@@ -843,6 +857,84 @@ def validate(
             metrics[err_key] = err_term
             if mode == VALID_MODE and best_metrics is None:
                 best_metrics = metrics
+                
+
+def test_eer(
+    model,
+    device,
+    args,
+    h,
+    sw:SummaryWriter=None,
+):
+    global steps
+    is_main = sw is not None
+    eer_metric = EERMetric()
+    model.eval()
+    torch.cuda.empty_cache()
+    # TODO magic path is bad
+    from pathlib import Path
+    se_path = Path("/data1/yfliu/model/CorentinJ/encoder.pt")
+    vox2_avhubert_path = "conf/avhubert/large_avhubert_vox2all.yaml"
+    pair_path = "/data1/yfliu/voxceleb2/voxceleb2_testpairs.txt"
+    corentinJEncoder.load_model(se_path, device)
+    # vox2 test set
+    mode = TEST_MODE
+    avhubert_config = load_avhubert_config(vox2_avhubert_path)
+    testset = load_dataset_eer(
+        "test", 
+        avhubert_config["task"],
+        vid_dict=True,
+        pair_path=pair_path,
+        permute=False,
+        with_image_tsv=True,
+        )
+    test_loader, _ = get_dataloader(testset, 
+                                    batch_size=args.test_batch_size,
+                                    num_workers=h.num_gpus, 
+                                    dist_sampler=h.num_gpus > 1,
+                                    pin_memory=not h.num_gpus > 1,
+                                    drop_last=False,
+                                    shuffle=False)
+    with torch.no_grad():
+        pbar = tqdm(test_loader, desc="EER testing in progress...", disable=not is_main)
+        for j, batch in enumerate(pbar):
+            labels = batch[0]
+            batch = batch[1]
+            video = batch["net_input"]["source"]["video"].to(device)
+            mel_padding_mask = batch["net_input"]["padding_mask_mel"].to(device)
+            wav_padding_mask = batch["net_input"]["padding_mask_wav"].to(device)
+            unit_target = {
+                "kmeans_target":None,
+                "kmeans_mask":None,
+            }
+            if h.unit_name is not None or h.hu_repr_name is not None:
+                kmeans_mask = batch["net_input"]["padding_mask_km"]
+                if kmeans_mask is not None:
+                    kmeans_mask = kmeans_mask.to(device)
+                    if h.unit_name is not None:
+                        unit_target["kmeans_mask"] = ~kmeans_mask
+            image_input = batch["net_input"]["source"]["images"]
+            if image_input is not None:
+                image_input = image_input.to(device)
+            waveforms = model(video, 
+                              unit_target=unit_target, 
+                              farl_img_input=image_input, 
+                              mel_masks=~mel_padding_mask)["wav_generated"]  # [B*2, T']
+            similarity = corentinJEncoder.compute_similarity(
+                waveforms.squeeze(1),
+                ~wav_padding_mask,
+                max_audio_sample_size=4*16000,  # 4 seconds. Longer is better but consumes more mem.
+                pad_audio=False,
+                )
+            eer_metric.update(
+                preds=similarity,
+                labels=labels,
+            )
+    final_eer = eer_metric.compute()
+    if is_main:
+        print(final_eer)
+        sw.add_scalar(f"{mode}/eer", final_eer, steps)
+
 
 def main():
     
@@ -909,6 +1001,8 @@ def main():
     OmegaConf.save(avhubert_config, os.path.join(a.checkpoint_path, 'avhubert_config.yaml'))
 
     torch.manual_seed(h.seed)
+    # TODO magic batch size is bad
+    a.test_batch_size = 1
     if torch.cuda.is_available():
         torch.cuda.manual_seed(h.seed)
         h.num_gpus = torch.cuda.device_count()

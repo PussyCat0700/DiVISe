@@ -128,8 +128,13 @@ def load_dataset_eer(split: str,
                  cfg:AVHubertPretrainingConfig, 
                  vid_dict: bool,
                  pair_path: str,
+                 with_image_tsv=True,
+                 permute: bool=True,
                  ) -> eer_dataset.VideoPairDataset:
         manifest = f"{cfg.data}/{split}.tsv"
+        image_tsv_path = None
+        if with_image_tsv:
+            image_tsv_path = f"{cfg.data}/frame_{split}.tsv"
         image_aug = cfg.image_aug if split == 'train' else False
         # noise_fn, noise_snr = f"{self.cfg.noise_wav}/{split}.tsv" if self.cfg.noise_wav is not None else None, eval(self.cfg.noise_snr)
         # noise_num = self.cfg.noise_num
@@ -155,6 +160,8 @@ def load_dataset_eer(split: str,
             modalities=modalities,  # if your modality setting doesn't work, this might be where to find a clue.
             vid_dict=vid_dict,  # set to True when you want to test video EER on voxceleb2
             pair_path=pair_path,
+            permute=permute,
+            image_tsv_path=image_tsv_path,
             # noise_fn=noise_fn,
             # noise_prob=cfg.noise_prob,  # 0.0
             # noise_snr=noise_snr,
