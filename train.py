@@ -3,7 +3,6 @@ import logging
 import random
 import sys
 import warnings
-import numpy as np
 from omegaconf import OmegaConf
 from transformers import Wav2Vec2ForCTC
 import torchmetrics
@@ -12,7 +11,7 @@ from constants import GRIFFINLIM,\
     GENERATOR_METHODS, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD, BIGVGAN_NO_GRAD, PWG_NO_GRAD,\
     UNIT_METHODS, UNIT_SPEECH_TOKENIZER_NO_GRAD, UNIT_SOFT
 
-from contrastive.metrics import calc_cosine_similarity, EERMetric
+from contrastive.metrics import EERMetric
 from dataset import load_avhubert_config, load_dataset, get_dataloader
 from dataset.dataset_loading import load_dataset_eer
 import speaker_encoder.inference as corentinJEncoder
@@ -31,12 +30,14 @@ import torch.multiprocessing as mp
 from torch.distributed import init_process_group
 from torch.nn.parallel import DistributedDataParallel
 from env import AttrDict, build_env
-from dataset.meldataset import MelSpectrogramInverter, mel_spectrogram, mel_spectrogram_and_energy
+from dataset.meldataset import MelSpectrogramInverter,LogMelSpectrogram
 from models import AVHuBERTGenerator, MultiPeriodDiscriminator, MultiScaleDiscriminator, feature_loss, generator_loss,\
     discriminator_loss
 from utils import DataLoaderSeeder, TriStageLRScheduler, plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint, seed_everything, unwrap_module_discriminator, unwrap_module_generator
 from prosody_predictor.predictor import ProsodyPredictor
 from audio.eval_utils import AudioEvaluater, MyWav2Vec2Processor
+import light_hf_proxy
+
 
 torch.backends.cudnn.benchmark = True
 logging.basicConfig(
@@ -54,6 +55,8 @@ VALID_MODE = "validation"
 metrics = {}
 best_metrics = None
 steps = 0
+
+
 def initialize_val_terms(train_mode:str, classification:bool):
     val_err_tot = {
         "mel_spec_error_avhubert": 0,
@@ -103,6 +106,7 @@ def train(rank, a, h, avhubert_config):
     seed_everything(h.seed)
     torch.cuda.set_device(rank)  # A very strong boost. See https://github.com/jik876/hifi-gan/pull/25
     device = torch.device('cuda:{:d}'.format(rank))
+    logmel = LogMelSpectrogram().to(device)
     if a.train_mode == VIDEO2MEL_MODE:
         generator_mode = GRIFFINLIM
         if a.hifigan_ckpt is not None:
@@ -368,10 +372,7 @@ def train(rank, a, h, avhubert_config):
                     image_input = image_input.to(device)
                 mel_padding_mask = batch["net_input"]["padding_mask_mel"].to(device)
                 wav_padding_mask = batch["net_input"]["padding_mask_wav"].to(device)
-                y_dict = mel_spectrogram_and_energy(y, h.n_fft, h.num_mels,
-                                    h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax,
-                                    center=False)
-                y_mel = y_dict["spec"]
+                y_mel = logmel(y)
                 y = torch.autograd.Variable(y.to(device, non_blocking=True))
                 y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
                 y = y.unsqueeze(1)
@@ -391,7 +392,8 @@ def train(rank, a, h, avhubert_config):
                 def normalize_prosody(x, m=1e-8):
                     return (x - x.mean(dim=-1, keepdim=True))/(m+x.std(dim=-1, keepdim=True))
                 if h.prosody_type is not None:
-                    energy_targets = y_dict["energy"].to(device)
+                    # TODO remove prosody support completely
+                    # energy_targets = y_dict["energy"].to(device)
                     pitch_targets = avhubert_source_batch["pitch"].to(device)
                     if h.prosody_type == 'kaldi':
                         pitch_targets = pitch_targets[..., 0]
@@ -479,8 +481,7 @@ def train(rank, a, h, avhubert_config):
                     
                 if a.train_mode == VIDEO2WAV_MODE:
                     y_g_hat = generator_out["wav_generated"]
-                    y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size,
-                                                h.fmin, h.fmax_for_loss)
+                    y_g_hat_mel = logmel(y_g_hat.squeeze(1))
 
                     optim_d.zero_grad()
 
@@ -503,7 +504,7 @@ def train(rank, a, h, avhubert_config):
                 loss_gen_all = 0
                 if a.train_mode == VIDEO2WAV_MODE:
                     # L1 Mel-Spectrogram Loss
-                    loss_mel = F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_hat_mel.masked_select(~mel_padding_mask.unsqueeze(1))) * 45
+                    loss_mel = F.l1_loss(y_mel, y_g_hat_mel) * 45
                     loss_gen_all += loss_mel
                 # Another L1 Mel-Spectrogram Loss from AV-HuBERT Generator itself.
                 if a.decay_melloss:
@@ -512,7 +513,7 @@ def train(rank, a, h, avhubert_config):
                 else:
                     alpha_avhubert = h.base_alpha_avhubert
                 if y_g_avhubert_mel is not None:
-                    loss_mel_avhubert = F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_avhubert_mel.masked_select(~mel_padding_mask.unsqueeze(1))) * alpha_avhubert
+                    loss_mel_avhubert = F.l1_loss(y_mel, y_g_avhubert_mel) * alpha_avhubert
 
                 if a.train_mode == VIDEO2WAV_MODE:
                     y_df_hat_r, y_df_hat_g, fmap_f_r, fmap_f_g = mpd(y, y_g_hat)
@@ -541,9 +542,9 @@ def train(rank, a, h, avhubert_config):
                     if steps % a.stdout_interval == 0:
                         with torch.no_grad():
                             if a.train_mode == VIDEO2WAV_MODE:
-                                mel_error_generator = F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_hat_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
+                                mel_error_generator = F.l1_loss(y_mel, y_g_hat_mel).item()
                             if y_g_avhubert_mel is not None:
-                                mel_error_avhubert = F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_avhubert_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
+                                mel_error_avhubert = F.l1_loss(y_mel, y_g_avhubert_mel).item()
                         if a.train_mode == VIDEO2WAV_MODE:
                             pbar.set_description('Epoch: {:d}, Gen Loss Total : {:4.3f}, Video2Wav Mel-Spec. Error : {:4.3f}, s/b : {:4.3f}'.
                                 format(epoch, loss_gen_all, mel_error_generator, time.time() - start_b))
@@ -651,15 +652,6 @@ def train(rank, a, h, avhubert_config):
             if rank == 0:
                 logging.info('Time taken for epoch {} is {} sec\n'.format(epoch + 1, int(time.time() - start)))
             # End of a train epoch
-    # Ultimate test
-    print('testing eer.')
-    test_eer(
-        model=generator,
-        device=device,
-        args=a,
-        h=h,
-        sw=sw,
-    )
     if rank == 0:
         print('testing wer and so on.')
         test_args = {
@@ -677,6 +669,15 @@ def train(rank, a, h, avhubert_config):
                 "unit_key":unit_key,
             }
         validate(**test_args)
+    # Ultimate test
+    print('testing eer.')
+    test_eer(
+        model=generator,
+        device=device,
+        args=a,
+        h=h,
+        sw=sw,
+    )
 
 
 def validate(
@@ -695,6 +696,7 @@ def validate(
     ):
     global metrics, best_metrics, steps
     generator.eval()
+    logmel = LogMelSpectrogram().to(device)
     torch.cuda.empty_cache()
     err_tot = initialize_val_terms(a.train_mode, h.unit_name is not None)
     if mode == VALID_MODE:
@@ -736,9 +738,7 @@ def validate(
             gt_texts = [x.strip() for x in batch["target"]]
             mel_padding_mask = batch["net_input"]["padding_mask_mel"].to(device)
             wav_padding_mask = batch["net_input"]["padding_mask_wav"].to(device)
-            y_mel = mel_spectrogram(y, h.n_fft, h.num_mels,
-                                h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax,
-                                center=False)
+            y_mel = logmel(y)
             y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
             prosody_target = {
                 "pitch_target":None,
@@ -768,10 +768,8 @@ def validate(
             y_g_hat_vc = None
             if a.train_mode == VIDEO2WAV_MODE:
                 y_g_hat = generator_out["wav_generated"].detach()
-                y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate,
-                                                h.hop_size, h.win_size,
-                                                h.fmin, h.fmax_for_loss)
-                err_tot["mel_spec_error_generator"] += F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_hat_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
+                y_g_hat_mel = logmel(y_g_hat.squeeze(1))
+                err_tot["mel_spec_error_generator"] += F.l1_loss(y_mel, y_g_hat_mel).item()
             elif a.train_mode == VIDEO2MEL_MODE:
                 if y_g_avhubert_mel is not None:
                     y_g_hat = mel2wav_inverter(y_g_avhubert_mel.detach().transpose(-1, -2))
@@ -810,7 +808,7 @@ def validate(
                 text_vc = audioeval_vocoder.eval_metrics(y_g_hat_vc, y, wav_padding_mask, gt_texts)
             pbar.set_description(f'current wer={err_tot["wer_vocoder"]}(vc), {err_tot["wer"]}(gf)')
             if y_g_avhubert_mel is not None:
-                err_tot["mel_spec_error_avhubert"] += F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_avhubert_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
+                err_tot["mel_spec_error_avhubert"] += F.l1_loss(y_mel, y_g_avhubert_mel).item()
             if text_gf is not None:
                 for line in text_gf:
                     f_gf.write(line+'\n')
@@ -833,9 +831,7 @@ def validate(
                     sw.add_figure(f'{gt_prefix}/y_spec_{j}', plot_spectrogram(y_mel[0].cpu()), steps)
                 if a.train_mode == VIDEO2WAV_MODE:
                     sw.add_audio(f'{generated_prefix}/y_hat_{j}', y_g_hat[0], steps, h.sampling_rate)
-                    y_hat_spec = mel_spectrogram(y_g_hat[0], h.n_fft, h.num_mels,
-                                                    h.sampling_rate, h.hop_size, h.win_size,
-                                                    h.fmin, h.fmax)
+                    y_hat_spec = logmel(y_g_hat[0])
                     sw.add_figure(f'{generated_prefix}/y_hat_spec_{j}',
                                     plot_spectrogram(y_hat_spec.squeeze(0).cpu().numpy()), steps)
                 elif a.train_mode == VIDEO2MEL_MODE:

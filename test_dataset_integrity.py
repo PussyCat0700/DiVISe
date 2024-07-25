@@ -2,7 +2,7 @@ import json
 import logging
 from tqdm import tqdm
 from dataset.dataset_loading import get_dataloader, load_avhubert_config, load_dataset
-from dataset.meldataset import mel_spectrogram_and_energy
+from dataset.meldataset import LogMelSpectrogram
 import argparse
 from env import AttrDict
 logging.getLogger(__name__)
@@ -17,6 +17,7 @@ if __name__ == '__main__':
     parser.add_argument("--st_type")
     args = parser.parse_args()
     avhubert_config = load_avhubert_config(args.avhubert_config)
+    logmel = LogMelSpectrogram()
     with open(args.hifigan_config) as f:
         data = f.read()
     json_config = json.loads(data)
@@ -50,10 +51,7 @@ if __name__ == '__main__':
         for batch in pbar:
             src = batch["net_input"]["source"]
             pbar.set_description(f"Now at {src['name'][0]['audio']}")
-            y_dict = mel_spectrogram_and_energy(src["audio"], h.n_fft, h.num_mels,
-                                  h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax,
-                                  center=False)
-            y_mel = y_dict["spec"]
+            y_mel = logmel(src["audio"])
             if src["pitch"] is not None:
                 assert src["pitch"].shape[-1] == y_mel.shape[-1], f'{y_mel.shape[-1]=} but {src["pitch"].shape[-1]=}'
             if src["km"] is not None:

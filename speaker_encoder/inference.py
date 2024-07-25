@@ -152,7 +152,7 @@ def embed_utterance(wav, using_partials=True, return_partials=False, **kwargs):
     return embed
 
 
-def compute_similarity(waveforms, wav_padding_masks, max_audio_sample_size=None, pad_audio=True):
+def compute_similarity(waveforms, wav_padding_masks=None, max_audio_sample_size=None, pad_audio=True):
     """compute eer for waveforms
 
     Args:
@@ -160,12 +160,15 @@ def compute_similarity(waveforms, wav_padding_masks, max_audio_sample_size=None,
         wav_padding_masks (torch.BoolTensor): [B*2, T], false means masked.
         max_audio_sample_size (int, optional): max length allowed in frames. Defaults to None.
         pad_audio (bool, optional): True: max padding. False: min cutting. Defaults to True.
+            If True, wav_padding_mask must be specified.
+            If False, it is recommended that you short-cut the audios.
 
     Returns:
         _type_: _description_
     """
-    assert waveforms.dim() == 2 and wav_padding_masks.dim() == 2, 'dim not match'
-    if max_audio_sample_size is not None:
+    assert waveforms.dim() == 2, 'waveform dim does not match'
+    assert wav_padding_masks.dim() == 2, 'wave padding mask dim does not match'
+    if max_audio_sample_size is not None and wav_padding_masks is not None:
         wav_padding_masks = wav_padding_masks[:, :max_audio_sample_size]
     if pad_audio:
         audio_embeddings = []
@@ -177,8 +180,9 @@ def compute_similarity(waveforms, wav_padding_masks, max_audio_sample_size=None,
         audio_embeddings = np.array(audio_embeddings)  
         audio_embeddings = torch.Tensor(audio_embeddings)
     else:
-        min_length = wav_padding_masks.sum(dim=-1).min().item()
-        waveforms = waveforms[:, :min_length]
+        if wav_padding_masks is not None:
+            min_length = wav_padding_masks.sum(dim=-1).min().item()
+            waveforms = waveforms[:, :min_length]
         frames = [wav_to_mel_spectrogram(wav.cpu().numpy()) for wav in waveforms]
         frames = torch.from_numpy(np.array(frames)).to(_model.device)
         audio_embeddings = _model.forward(frames)

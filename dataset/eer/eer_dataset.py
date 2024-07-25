@@ -1,9 +1,8 @@
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+import torchaudio
 from dataset.avdatasets import AVHubertDataset
-from dataset.meldataset import load_wav
-from speaker_encoder.audio import preprocess_wav
 
 class ContrastivePairTestDataset(Dataset):
     def __getitem__(self, index):
@@ -79,11 +78,50 @@ class AudioPairDataset(ContrastivePairTestDataset):
         audioitem = super().__getitem__(index)
         audio_path0 = audioitem['item0']
         audio_path1 = audioitem['item1']
-        audio0 = preprocess_wav(audio_path0)
-        audio1 = preprocess_wav(audio_path1)
+        audio0 = torchaudio.load(audio_path0)[0].squeeze(0)
+        audio1 = torchaudio.load(audio_path1)[0].squeeze(0)
         audio0 = torch.Tensor(audio0)
         audio1 = torch.Tensor(audio1)
         return audioitem['is_positive'], (audio0, audio1)  # [2, ...]
+    
+    def collater(self, batch):
+        # Step 1: Split each tensor into two parts and organize them into two groups
+        is_positive = np.array([tensor[0] for tensor in batch])
+        group1 = [tensor[1][0] for tensor in batch]  # first elements of each pair
+        group2 = [tensor[1][1] for tensor in batch]  # second elements of each pair
+        # Step 2: Stack each group to create the new dimension for pairs
+        groups = group1 + group2
+        lengths = [len(x) for x in groups]
+        collated = torch.nn.utils.rnn.pad_sequence(groups, batch_first=True)  # [B, Tmax]
+        # Step 3: Update the mask to True for real logits
+        padding_mask = torch.zeros_like(collated, dtype=torch.bool)
+        for i, length in enumerate(lengths):
+            padding_mask[i, :length] = True
+        return is_positive, collated, padding_mask
+
+
+class UnitDataset(ContrastivePairTestDataset):
+    def __init__(self, unit_path, pair_path) -> None:
+        super().__init__()
+        self.pairs = self.read_pairs(pair_path)
+        self.units = self.read_units(unit_path)
+    
+    def read_units(self, unit_path):
+        lines = []
+        with open(unit_path, 'r') as f:
+            units_lines = f.readlines()
+            for units_line in units_lines:
+                units_line = [int(unit) for unit in units_line.strip().split()]
+                lines.append(units_line)
+        return lines
+        
+    def __getitem__(self, index):
+        is_pos, item_a, item_b = self.pairs[index]
+        file_idx0 = int(item_a)
+        file_idx1 = int(item_b)
+        units_0 = torch.LongTensor(self.units[file_idx0])
+        units_1 = torch.LongTensor(self.units[file_idx1])
+        return is_pos, (units_0, units_1)  # [2, ...]
     
     def collater(self, batch):
         # Step 1: Split each tensor into two parts and organize them into two groups

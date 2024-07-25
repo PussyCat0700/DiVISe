@@ -18,7 +18,6 @@ import torch.multiprocessing as mp
 from torch.distributed import init_process_group
 from torch.nn.parallel import DistributedDataParallel
 from env import AttrDict, build_env
-from dataset.meldataset import mel_spectrogram
 from models import AVHuBERTGenerator
 from utils import scan_checkpoint, load_checkpoint, seed_everything
 from prosody_predictor.predictor import ProsodyPredictor

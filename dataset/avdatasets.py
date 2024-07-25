@@ -19,8 +19,7 @@ import torch
 from fairseq.data.fairseq_dataset import FairseqDataset
 from torch.utils.data import Dataset
 from scipy.io import wavfile
-from dataset.meldataset import MAX_WAV_VALUE, load_wav
-from librosa.util import normalize as librsa_normalize
+from dataset.meldataset import load_wav
 
 DBG=True
 
@@ -270,8 +269,6 @@ class AVHubertDataset(FairseqDataset):
         if 'audio' in self.modalities:
             wav_data, sample_rate = load_wav(audio_fn)
             assert sample_rate == 16_000 and len(wav_data.shape) == 1
-            wav_data = wav_data / MAX_WAV_VALUE
-            wav_data = librsa_normalize(wav_data) * 0.95
             if np.random.rand() < self.noise_prob:
                 wav_data = self.add_noise(wav_data)  # noise_prob is 0, don't worry.
         if self.images:
@@ -683,8 +680,6 @@ class ContrastiveDataset(Dataset):
         if 'audio' in self.modalities:
             wav_data, sample_rate = load_wav(audio_fn)
             assert sample_rate == 16_000 and len(wav_data.shape) == 1
-            wav_data = wav_data / MAX_WAV_VALUE
-            wav_data = librsa_normalize(wav_data) * 0.95
             if np.random.rand() < self.noise_prob:
                 wav_data = self.add_noise(wav_data)  # noise_prob is 0, don't worry.
             wav_data = reshape_array(wav_data)  # [T//2, 2]
