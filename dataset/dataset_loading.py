@@ -1,16 +1,16 @@
-from argparse import Namespace
-
+import json
 from omegaconf import OmegaConf
 from avhubert import AVHubertPretrainingConfig, AVHubertConfig
 from constants import UNIT_SPEECH_TOKENIZER_NO_GRAD
 from dataset.avdatasets import AVHubertDataset, ContrastiveDataset
 from torch.utils.data import DistributedSampler, DataLoader, ConcatDataset
-from typing import List
 import logging
-
 from dataset.eer import eer_dataset
+from env import AttrDict
+
 
 logger = logging.getLogger(__name__)
+
 
 def load_avhubert_config(cfg_path):
     file_config = OmegaConf.load(cfg_path)
@@ -20,6 +20,19 @@ def load_avhubert_config(cfg_path):
         "task": task_config,
         "model": model_config,
         }
+
+def load_hifigan_config(hifigan_config_dir):
+    with open(hifigan_config_dir) as f:
+        data = f.read()
+
+    json_config = json.loads(data)
+    default_nones = {
+        'prosody_type', 'st_type', 'hu_repr_name',
+        'unit_name', 'valid_unit_name', 'test_unit_name',
+    }
+    json_config.update({k:None for k in default_nones if k not in json_config.keys()})
+    h = AttrDict(json_config)
+    return h
 
 class AVHuBERTAdaptingCollater:
     """Collater designed especially for fairseq's dataset
@@ -130,11 +143,15 @@ def load_dataset_eer(split: str,
                  pair_path: str,
                  with_image_tsv=True,
                  permute: bool=True,
+                 km_name: str=None,
+                 km_pad_class_idx=None,
                  ) -> eer_dataset.VideoPairDataset:
         manifest = f"{cfg.data}/{split}.tsv"
         image_tsv_path = None
         if with_image_tsv:
             image_tsv_path = f"{cfg.data}/frame_{split}.tsv"
+        if km_name is not None:
+            km_name = f"{cfg.data}/{km_name}.km"
         image_aug = cfg.image_aug if split == 'train' else False
         # noise_fn, noise_snr = f"{self.cfg.noise_wav}/{split}.tsv" if self.cfg.noise_wav is not None else None, eval(self.cfg.noise_snr)
         # noise_num = self.cfg.noise_num
@@ -162,6 +179,8 @@ def load_dataset_eer(split: str,
             pair_path=pair_path,
             permute=permute,
             image_tsv_path=image_tsv_path,
+            km_path=km_name,
+            km_pad_class=km_pad_class_idx,
             # noise_fn=noise_fn,
             # noise_prob=cfg.noise_prob,  # 0.0
             # noise_snr=noise_snr,

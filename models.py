@@ -78,18 +78,24 @@ class ResBlock2(torch.nn.Module):
 
 
 class Generator(torch.nn.Module):
-    def __init__(self, h, conv_indim, unit_nums=None):
+    def __init__(self, h, conv_indim, unit_nums=None, use_farl=False):
         super(Generator, self).__init__()
         self.h = h
         self.num_kernels = len(h.resblock_kernel_sizes)
         self.num_upsamples = len(h.upsample_rates)
         self.mode = UNIT_HIFIGAN_NO_GRAD if unit_nums is not None else None
+        self.use_farl = use_farl
         # initial upsampling layers
         if self.mode == UNIT_HIFIGAN_NO_GRAD:
             # lookup table as in https://arxiv.org/abs/2104.00355
             # The extra embedding to the end is used for padding in dataset collating.
             self.lut = nn.Embedding(unit_nums+1, conv_indim)
         self.conv_pre = weight_norm(Conv1d(conv_indim, h.upsample_initial_channel, 7, 1, padding=3))
+        if self.use_farl:
+            self.farl_model, _ = clip.load("ViT-B/16")
+            for param in self.farl_model.parameters():
+                param.requires_grad = False
+            self.farl_model.eval()
         resblock = ResBlock1 if h.resblock == '1' else ResBlock2
 
         self.ups = nn.ModuleList()
@@ -108,11 +114,14 @@ class Generator(torch.nn.Module):
         self.ups.apply(init_weights)
         self.conv_post.apply(init_weights)
 
-    def forward(self, x):
+    def forward(self, x, img_input=None):
         if self.mode == UNIT_HIFIGAN_NO_GRAD:
             x = self.lut(x)
         x = x.transpose(-1, -2).contiguous()
         x = self.conv_pre(x)
+        if self.use_farl:
+            farl_embedding = self.farl_model.encode_image(img_input).float().unsqueeze(-1)  # [B, C, 1]
+            x = x + farl_embedding  # [B, C, T]
         for i in range(self.num_upsamples):
             x = F.leaky_relu(x, LRELU_SLOPE)
             x = self.ups[i](x)
@@ -137,6 +146,11 @@ class Generator(torch.nn.Module):
             l.remove_weight_norm()
         remove_weight_norm(self.conv_pre)
         remove_weight_norm(self.conv_post)
+
+    def load_pretrained_farlmodel(self, pretrained_farl_path:str, map_location):
+        self.farl_model = self.farl_model.to(map_location)
+        farl_state=torch.load(pretrained_farl_path) # you can download from https://github.com/FacePerceiver/FaRL#pre-trained-backbones
+        self.farl_model.load_state_dict(farl_state["state_dict"],strict=False)
 
 class AVHuBERT2UnitHiFiGAN(nn.Module):
     def __init__(self, attention_dim, unit_nums) -> None:

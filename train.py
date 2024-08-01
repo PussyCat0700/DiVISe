@@ -12,7 +12,7 @@ from constants import GRIFFINLIM,\
     UNIT_METHODS, UNIT_SPEECH_TOKENIZER_NO_GRAD, UNIT_SOFT
 
 from contrastive.metrics import EERMetric
-from dataset import load_avhubert_config, load_dataset, get_dataloader
+from dataset import load_avhubert_config, load_hifigan_config, load_dataset, get_dataloader
 from dataset.dataset_loading import load_dataset_eer
 import speaker_encoder.inference as corentinJEncoder
 from vocoders.parallel_wavegan.pwg_model import PWGModel
@@ -504,7 +504,7 @@ def train(rank, a, h, avhubert_config):
                 loss_gen_all = 0
                 if a.train_mode == VIDEO2WAV_MODE:
                     # L1 Mel-Spectrogram Loss
-                    loss_mel = F.l1_loss(y_mel, y_g_hat_mel) * 45
+                    loss_mel = F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_hat_mel.masked_select(~mel_padding_mask.unsqueeze(1))) * 45
                     loss_gen_all += loss_mel
                 # Another L1 Mel-Spectrogram Loss from AV-HuBERT Generator itself.
                 if a.decay_melloss:
@@ -513,7 +513,7 @@ def train(rank, a, h, avhubert_config):
                 else:
                     alpha_avhubert = h.base_alpha_avhubert
                 if y_g_avhubert_mel is not None:
-                    loss_mel_avhubert = F.l1_loss(y_mel, y_g_avhubert_mel) * alpha_avhubert
+                    loss_mel_avhubert = F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_avhubert_mel.masked_select(~mel_padding_mask.unsqueeze(1))) * alpha_avhubert
 
                 if a.train_mode == VIDEO2WAV_MODE:
                     y_df_hat_r, y_df_hat_g, fmap_f_r, fmap_f_g = mpd(y, y_g_hat)
@@ -542,9 +542,9 @@ def train(rank, a, h, avhubert_config):
                     if steps % a.stdout_interval == 0:
                         with torch.no_grad():
                             if a.train_mode == VIDEO2WAV_MODE:
-                                mel_error_generator = F.l1_loss(y_mel, y_g_hat_mel).item()
+                                mel_error_generator = F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_hat_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
                             if y_g_avhubert_mel is not None:
-                                mel_error_avhubert = F.l1_loss(y_mel, y_g_avhubert_mel).item()
+                                mel_error_avhubert = F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_avhubert_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
                         if a.train_mode == VIDEO2WAV_MODE:
                             pbar.set_description('Epoch: {:d}, Gen Loss Total : {:4.3f}, Video2Wav Mel-Spec. Error : {:4.3f}, s/b : {:4.3f}'.
                                 format(epoch, loss_gen_all, mel_error_generator, time.time() - start_b))
@@ -769,7 +769,7 @@ def validate(
             if a.train_mode == VIDEO2WAV_MODE:
                 y_g_hat = generator_out["wav_generated"].detach()
                 y_g_hat_mel = logmel(y_g_hat.squeeze(1))
-                err_tot["mel_spec_error_generator"] += F.l1_loss(y_mel, y_g_hat_mel).item()
+                err_tot["mel_spec_error_generator"] += F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_hat_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
             elif a.train_mode == VIDEO2MEL_MODE:
                 if y_g_avhubert_mel is not None:
                     y_g_hat = mel2wav_inverter(y_g_avhubert_mel.detach().transpose(-1, -2))
@@ -808,7 +808,7 @@ def validate(
                 text_vc = audioeval_vocoder.eval_metrics(y_g_hat_vc, y, wav_padding_mask, gt_texts)
             pbar.set_description(f'current wer={err_tot["wer_vocoder"]}(vc), {err_tot["wer"]}(gf)')
             if y_g_avhubert_mel is not None:
-                err_tot["mel_spec_error_avhubert"] += F.l1_loss(y_mel, y_g_avhubert_mel).item()
+                err_tot["mel_spec_error_avhubert"] += F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_avhubert_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
             if text_gf is not None:
                 for line in text_gf:
                     f_gf.write(line+'\n')
@@ -963,16 +963,7 @@ def main():
         logging.warning(f"You're using default checkpoint dir {default_ckpt_dir}.\n"+\
             " This should not happen in serious runs as checkpoint dir is likely overwritten with runs in default args.")
 
-    with open(a.hifigan_config) as f:
-        data = f.read()
-
-    json_config = json.loads(data)
-    default_nones = {
-        'prosody_type', 'st_type', 'hu_repr_name',
-        'unit_name', 'valid_unit_name', 'test_unit_name',
-    }
-    json_config.update({k:None for k in default_nones if k not in json_config.keys()})
-    h = AttrDict(json_config)
+    h = load_hifigan_config(a.hifigan_config)
     if h.prosody_type is not None:
         assert h.norm_mode in ['original', 'meanvar'], f"{h.norm_mode=} which is not a valid way to normalize prosody."
     avhubert_config = load_avhubert_config(a.avhubert_config)
