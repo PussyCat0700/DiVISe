@@ -249,6 +249,8 @@ def test_eer(
 ):
     global steps
     is_main = sw is not None
+    # Warning: Current EER value is rank 0 only
+    # TODO add all_gather across all processes
     eer_metric = EERMetric()
     speaker_encoder.eval()
     torch.cuda.empty_cache()

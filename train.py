@@ -63,11 +63,13 @@ def initialize_val_terms(train_mode:str, classification:bool):
         "stoi":0,
         "estoi":0,
         "pesq":0,
+        "secs":0,
         "wer":0,
         "wer_vocoder":0,
         "stoi_vocoder":0,
         "estoi_vocoder":0,
         "pesq_vocoder":0,
+        "secs_vocoder":0,
         "algorithmic":set(),
     }
     if train_mode == VIDEO2WAV_MODE:
@@ -713,11 +715,13 @@ def validate(
             w2v_processor=w2v_processor, 
             w2v_model=w2v_model,
             err_tot=err_tot,
+            device=device,
             )
         audioeval_vocoder = AudioEvaluater(
             w2v_processor=w2v_processor, 
             w2v_model=w2v_model,
             err_tot=err_tot,
+            device=device,
             postfix="vocoder"
             )
         pbar = tqdm(loader, desc="Validation in progress...")
@@ -864,6 +868,8 @@ def test_eer(
 ):
     global steps
     is_main = sw is not None
+    # Warning: Current EER value is rank 0 only
+    # TODO add all_gather across all processes
     eer_metric = EERMetric()
     model.eval()
     torch.cuda.empty_cache()

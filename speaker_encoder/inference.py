@@ -164,7 +164,7 @@ def compute_similarity(waveforms, wav_padding_masks=None, max_audio_sample_size=
             If False, it is recommended that you short-cut the audios.
 
     Returns:
-        _type_: _description_
+        torch.Tensor: similarity scores of shape [B]
     """
     assert waveforms.dim() == 2, 'waveform dim does not match'
     assert wav_padding_masks.dim() == 2, 'wave padding mask dim does not match'

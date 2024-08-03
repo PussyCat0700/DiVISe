@@ -14,6 +14,8 @@ import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm
 import wandb
+from audio.eval_utils import AudioEvaluater, MyWav2Vec2Processor
+from transformers import Wav2Vec2ForCTC
 from constants import HIFIGAN_NO_GRAD
 
 from contrastive.metrics import EERMetric
@@ -145,7 +147,6 @@ def train_model(rank, world_size, args, avhubert_config, hifigan_config):
             "km_pad_class_idx": hifigan_config.k,
             "generator_mode":HIFIGAN_NO_GRAD,
             "with_image_tsv": use_farl,
-            "with_text": False,
         }
     original_max_sample_seconds = avhubert_config["task"].max_sample_seconds
     trainset = load_dataset("train", avhubert_config["task"], **dataloading_kwargs)
@@ -188,18 +189,25 @@ def train_model(rank, world_size, args, avhubert_config, hifigan_config):
                 "fake_km_mask":True,
             })
 
-    melspectrogram = LogMelSpectrogram().to(rank)
-
     if args.test:
         logger.info("will only perform test")
-        test_eer(
-            model=generator,
-            device=device,
-            h=hifigan_config,
-            global_steps=global_step,
-            sw=writer
-        )
-        exit(0)
+        if rank == 0:
+            average_validation_loss = validate(
+                generator,
+                validation_loader,
+                use_farl,
+                rank,
+                global_step,
+                writer,
+            )
+            test_eer(
+                model=generator,
+                device=device,
+                h=hifigan_config,
+                global_steps=global_step,
+                sw=writer
+            )
+            exit(0)
     n_epochs = math.ceil(args.max_updates/(len(train_loader)*world_size))
     start_epoch = global_step // len(train_loader) + 1
 
@@ -232,7 +240,7 @@ def train_model(rank, world_size, args, avhubert_config, hifigan_config):
             optimizer_discriminator.zero_grad()
 
             wavs_ = generator(units, image_inputs)
-            mels_ = melspectrogram(wavs_)
+            mels_ = logmel(wavs_)
             scores, _ = discriminator(wavs)
             scores_, _ = discriminator(wavs_.detach())
 
@@ -284,43 +292,14 @@ def train_model(rank, world_size, args, avhubert_config, hifigan_config):
                     )
 
             if global_step % VALIDATION_INTERVAL == 0 and rank == 0:
-                generator.eval()
-
-                average_validation_loss = 0
-                for j, batch in enumerate(validation_loader, 1):
-                    avhubert_source_batch = batch["net_input"]["source"]
-                    wavs = avhubert_source_batch["audio"].to(rank)
-                    wavs = wavs.unsqueeze(1)
-                    tgts = logmel(wavs)
-                    units = avhubert_source_batch["km"].to(rank)
-                    image_inputs = None
-                    if use_farl:
-                        image_inputs = avhubert_source_batch["images"].to(rank)
-                    with torch.no_grad():
-                        wavs_ = generator(units, image_inputs)
-                        mels_ = melspectrogram(wavs_)
-
-                        length = min(mels_.size(-1), tgts.size(-1))
-
-                        loss_mel = F.l1_loss(mels_[..., :length], tgts[..., :length])
-
-                    average_validation_loss += (
-                        loss_mel.item() - average_validation_loss
-                    ) / j
-
-                    if rank == 0:
-                        if j <= NUM_GENERATED_EXAMPLES:
-                            writer.add_audio(
-                                f"generated/wav_{j}",
-                                wavs_.squeeze()[0],
-                                global_step,
-                                sample_rate=16000,
-                            )
-                            writer.add_figure(
-                                f"generated/mel_{j}",
-                                plot_spectrogram(mels_.squeeze()[0].cpu().numpy()),
-                                global_step,
-                            )
+                average_validation_loss = validate(
+                    generator,
+                    validation_loader,
+                    use_farl,
+                    rank,
+                    global_step,
+                    writer,
+                )                
 
                 generator.train()
                 discriminator.train()
@@ -364,6 +343,92 @@ def train_model(rank, world_size, args, avhubert_config, hifigan_config):
     dist.destroy_process_group()
 
 
+def validate(
+    generator,
+    validation_loader,
+    use_farl,
+    rank,
+    global_step,
+    writer=None,
+):
+    # Only allows rank 0
+    if rank != 0:
+        return
+    generator.eval()
+    err_tot = {
+        "stoi":0,
+        "estoi":0,
+        "pesq":0,
+        "wer":0,
+        "secs":0,
+        'algorithmic':set(),
+    }
+    w2v_model = Wav2Vec2ForCTC.from_pretrained("facebook/wav2vec2-large-960h-lv60-self").to(rank)
+    w2v_processor = MyWav2Vec2Processor.from_pretrained("facebook/wav2vec2-large-960h-lv60-self")
+    audioeval = AudioEvaluater(
+        w2v_processor=w2v_processor, 
+        w2v_model=w2v_model,
+        err_tot=err_tot,
+        device=torch.device(f'cuda:{rank}'),
+    )
+    logmel = LogMelSpectrogram().to(rank)
+    average_validation_loss = 0
+    for j, batch in enumerate(validation_loader, 1):
+        avhubert_source_batch = batch["net_input"]["source"]
+        wavs = avhubert_source_batch["audio"].to(rank)
+        wav_padding_mask = batch["net_input"]["padding_mask_wav"].to(rank)
+        gt_texts = [x.strip() for x in batch["target"]]
+        wavs = wavs.unsqueeze(1)
+        tgts = logmel(wavs)
+        units = avhubert_source_batch["km"].to(rank)
+        image_inputs = None
+        if use_farl:
+            image_inputs = avhubert_source_batch["images"].to(rank)
+        with torch.no_grad():
+            wavs_ = generator(units, image_inputs)
+            mels_ = logmel(wavs_)
+
+            length = min(mels_.size(-1), tgts.size(-1))
+
+            loss_mel = F.l1_loss(mels_[..., :length], tgts[..., :length])
+            text_transcribed = audioeval.eval_metrics(wavs_, wavs, wav_padding_mask, gt_texts)
+
+        average_validation_loss += (
+            loss_mel.item() - average_validation_loss
+        ) / j
+
+        if rank == 0:
+            if j <= NUM_GENERATED_EXAMPLES:
+                writer.add_text(
+                    f'real/text',
+                    gt_texts[0],
+                    global_step,
+                )
+                writer.add_text(
+                    f'generated/text',
+                    text_transcribed[0],
+                    global_step,
+                )
+                writer.add_audio(
+                    f"generated/wav_{j}",
+                    wavs_.squeeze()[0],
+                    global_step,
+                    sample_rate=16000,
+                )
+                writer.add_figure(
+                    f"generated/mel_{j}",
+                    plot_spectrogram(mels_.squeeze()[0].cpu().numpy()),
+                    global_step,
+                )
+    del w2v_model, w2v_processor
+    for err_key, err_term in err_tot.items():
+        if err_key == 'algorithmic':
+            continue
+        if err_key not in err_tot['algorithmic']:
+            err_term = err_term / (j+1)
+        writer.add_scalar(f"generated/{err_key}", err_term, global_step)
+    return average_validation_loss
+
 
 def test_eer(
     model,
@@ -373,6 +438,8 @@ def test_eer(
     sw:SummaryWriter=None,
 ):
     is_main = sw is not None
+    # Warning: Current EER value is rank 0 only
+    # TODO add all_gather across all processes
     eer_metric = EERMetric()
     model.eval()
     torch.cuda.empty_cache()

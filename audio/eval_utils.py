@@ -5,6 +5,7 @@ from pystoi import stoi
 import torch
 from torchaudio.models.decoder import download_pretrained_files, ctc_decoder
 from cypesq import NoUtterancesError
+import speaker_encoder.inference as corentinJEncoder
 import logging
 logger = logging.Logger(__name__)
 # Torchaudio utils
@@ -97,9 +98,26 @@ class MyWav2Vec2Processor(Wav2Vec2Processor):
         return normed_input_values
 # others
 def compute_audio_metrics_torch(degs:torch.Tensor, refs:torch.Tensor, rate:int, wav_padding_mask:torch.Tensor=None):
+    waveforms_stacked = torch.stack(
+        [refs, degs],
+        dim=0,
+    )  # [2, B, T]
+    waveforms_stacked = waveforms_stacked.reshape(-1, waveforms_stacked.shape[-1])
+    wav_padding_mask_stacked = wav_padding_mask.repeat(2, 1)
+    secs_list = corentinJEncoder.compute_similarity(
+        waveforms_stacked,
+        wav_padding_mask_stacked,
+        max_audio_sample_size=4*16000,  # 4 seconds. Longer is better but consumes more mem.
+        pad_audio=False,
+    ).tolist()
     degs = [x.masked_select(mask).cpu().numpy() for mask, x in zip(wav_padding_mask, degs.squeeze().detach())]
     refs = [x.masked_select(mask).cpu().numpy() for mask, x in zip(wav_padding_mask, refs.squeeze().detach())]
-    return compute_audio_metrics_numpy(degs, refs, rate)
+    rets = compute_audio_metrics_numpy(degs, refs, rate)
+    for i, ret in enumerate(rets):
+        ret["secs"] = secs_list[i]
+    return rets
+
+
 def compute_audio_metrics_numpy(degs:np.array, refs:np.array, rate:int):
     """
     returns either a list of result or just one result depending on input.
@@ -133,7 +151,7 @@ def _compute_audio_metrics(deg, ref, rate):
     }
 
 class AudioEvaluater:
-    def __init__(self, w2v_processor:MyWav2Vec2Processor, w2v_model, err_tot, postfix=None) -> None:
+    def __init__(self, w2v_processor:MyWav2Vec2Processor, w2v_model, err_tot, device, postfix=None) -> None:
         self.w2v_processor = w2v_processor
         self.w2v_model = w2v_model
         self.postfix = postfix
@@ -143,6 +161,7 @@ class AudioEvaluater:
         self.stoi_name = "stoi"
         self.estoi_name = "estoi"
         self.pesq_name = "pesq"
+        self.secs_name = "secs"
         self.n_err = 0
         self.n_total = 0
         if self.postfix is not None:
@@ -150,6 +169,11 @@ class AudioEvaluater:
             self.stoi_name += f'_{self.postfix}'
             self.estoi_name += f'_{self.postfix}'
             self.pesq_name += f'_{self.postfix}'
+            self.secs_name += f'_{self.postfix}'
+        # TODO magic path is bad
+        from pathlib import Path
+        se_path = Path("/data1/yfliu/model/CorentinJ/encoder.pt")
+        corentinJEncoder.load_model(se_path, device)
         # WER is computed with algorithmic averaging according to https://github.com/facebookresearch/av_hubert/blob/258fb50e155134eec2c4b49c2ae8de267075fd18/avhubert/infer_s2s.py#L254
         self.err_tot['algorithmic'].add(self.wer_name)
         
@@ -172,6 +196,9 @@ class AudioEvaluater:
             # model definition can be found in https://pytorch.org/audio/stable/_modules/torchaudio/models/wav2vec2/model.html
             if len(g_hat.shape) > 2:
                 g_hat = g_hat.squeeze(1)
+            if len(y.shape) > 2:
+                y = y.squeeze(1)
+            assert g_hat.dim()==2 and y.dim()==2 and wav_padding_mask.dim()==2
             generated_texts = self.map_to_pred(g_hat, wav_padding_mask)  # length indicates the valid length in time axis of emissions
             hypoes = []
             for generated_text, gt_text in zip(generated_texts, gt_texts):
@@ -187,4 +214,5 @@ class AudioEvaluater:
                 self.err_tot[self.stoi_name] += audio_metric["stoi"] / n_batch
                 self.err_tot[self.estoi_name] += audio_metric["estoi"] / n_batch
                 self.err_tot[self.pesq_name] += audio_metric["pesq"] / n_batch
+                self.err_tot[self.secs_name] += audio_metric["secs"] / n_batch
             return hypoes
