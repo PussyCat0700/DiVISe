@@ -1,44 +1,27 @@
-import math
 import numpy as np
-from sklearn.metrics import roc_curve
 from scipy.optimize import brentq
 from scipy.interpolate import interp1d
 import torch.nn.functional as F
 import torch
+from torchmetrics.classification import BinaryROC
 
 
-class EERMetric:
-    def __init__(self):
-        self.labels = []
-        self.predictions = []
-        self.nan_check = True  # disable at your own risk
-        
-    def _torch2numpy(self, x):
-        if isinstance(x, torch.Tensor):
-            return x.detach().cpu().numpy()
-        else:
-            return x
+class EERMetric(BinaryROC):
+    higher_is_better = False
+    def __init__(self, device):
+        super().__init__()
+        self.rank = device
+        self.to(self.rank)
+
+    def update(self, preds: F.Tensor, target: F.Tensor) -> None:
+        preds = torch.Tensor(preds).to(self.rank)
+        target = torch.LongTensor(target).to(self.rank)
+        return super().update(preds, target)
     
-    def _check_nans(self, x, name):
-        if any(math.isnan(x) for x in x): raise ValueError(f"NaN value found in {name}")
-
-    def update(self, preds, labels):
-        # Assuming preds and labels are numpy arrays when passed to this function.
-        preds = self._torch2numpy(preds)
-        labels = self._torch2numpy(labels)
-        self.predictions.append(preds)
-        self.labels.append(labels)
-
     def compute(self):
-        # Flatten the lists and convert to numpy arrays
-        all_preds = np.concatenate(self.predictions)
-        all_labels = np.concatenate(self.labels)
-        
-        # Compute ROC curve
-        fpr, tpr, thresholds = roc_curve(all_labels, all_preds)
-        if self.nan_check:
-            self._check_nans(fpr, "fpr")
-            self._check_nans(tpr, "tpr")
+        fpr, tpr, _ = super().compute()
+        fpr = fpr.cpu().numpy()
+        tpr = tpr.cpu().numpy()
         curve = lambda x: 1. - x - interp1d(fpr, tpr)(x)
         # Compute EER
         eer = brentq(curve, 0., 1.)
@@ -52,25 +35,63 @@ def calc_cosine_similarity(embeddings):
     return cos_sim
 
 
-if __name__ == '__main__':
-    # Usage
-    # Assume EERMetric class is already defined as previously provided
-    metric = EERMetric()
+def single_gpu_test(preds_list, labels_list):
+    # 单卡测试
+    metric = EERMetric(torch.device('cuda:0'))
+    
+    # 使用提供的预测值和标签
+    for preds, labels in zip(preds_list, labels_list):
+        metric.update(torch.tensor(preds, dtype=torch.float32), labels)
 
-    # Number of batches
-    num_batches = 10
-    batch_size = 7247  # Total of 72,474 pairs, distributed across 10 batches
-
-    # Simulate random predictions and labels
-    np.random.seed(42)  # For reproducibility
-    for _ in range(num_batches):
-        # Random predictions between 0 and 1
-        preds = np.random.randint(-100, 100, size=(batch_size))/100
-        # Random labels 0 or 1
-        labels = np.random.randint(0, 2, size=batch_size)
-        metric.update(preds, labels)
-
-    # Compute the EER after all batches have been processed
+    # 计算 EER
     eer = metric.compute()
-    print(f"Calculated EER: {eer:.4f}")
+    print(f"Calculated EER (Single GPU): {eer:.4f}")
+    return eer
+
+def multi_gpu_test(rank, world_size, preds_list1, preds_list2, labels_list1, labels_list2):
+    if rank == 0:
+        preds_list, labels_list = preds_list1, labels_list1
+    else:
+        preds_list, labels_list = preds_list2, labels_list2
+    # 初始化分布式环境
+    import torch.distributed as dist
+    dist.init_process_group("nccl", rank=rank, world_size=world_size, init_method='tcp://localhost:40742')
+    
+    # 创建 EERMetric 实例
+    metric = EERMetric(rank)
+    
+    for preds, labels in zip(preds_list, labels_list):
+        metric.update(torch.tensor(preds, dtype=torch.float32), labels)
+
+    eer = metric.compute()
+    print(f"Rank {rank}, Calculated EER: {eer:.4f}")
+    
+    # 清理
+    dist.destroy_process_group()
+
+if __name__ == '__main__':
+    # 设置随机种子
+    import random
+    random.seed(42)
+    np.random.seed(42)
+
+    # 准备测试数据
+    num_batches = 10
+    batch_size = 7247  # 总共有 72,474 对
+    preds_list1 = [np.random.randint(-100, 100, size=(batch_size)) / 100 for _ in range(num_batches//2)]
+    labels_list1 = [np.random.randint(0, 2, size=batch_size) for _ in range(num_batches//2)]
+    preds_list2 = [np.random.randint(-100, 100, size=(batch_size)) / 100 for _ in range(num_batches//2)]
+    labels_list2 = [np.random.randint(0, 2, size=batch_size) for _ in range(num_batches//2)]
+
+    # 单卡测试
+    single_eer = single_gpu_test(preds_list1+preds_list2, labels_list1+labels_list2)
+    
+    # 多卡测试
+    import torch.multiprocessing as mp
+    world_size = torch.cuda.device_count()
+    mp.spawn(multi_gpu_test, args=(world_size, preds_list1, preds_list2, labels_list1, labels_list2), nprocs=world_size, join=True)
+    
+    # 打印单卡和多卡结果对比
+    print(f"Single GPU EER: {single_eer}")
+    print("Ensure that all printed EER values from multi GPU match with the single GPU EER.")
 

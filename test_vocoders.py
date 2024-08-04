@@ -119,7 +119,7 @@ if __name__ == '__main__':
         vocoder.load_state_dict(unwrap_module_generator(
             hifigan_weight["generator"]["model"], ignore_conv_pre=False,
             ))
-    eer_metric = EERMetric()
+    eer_metric = EERMetric(rank)
     logmel = LogMelSpectrogram().to(device)
     if args.mode == HIFIGAN_NO_GRAD:
         audiopair_dataset = AudioPairDataset(pair_path=audio_pair_path)

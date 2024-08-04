@@ -33,7 +33,7 @@ dataloader = DataLoader(
     shuffle=False,
     num_workers=2,
 )
-eer_metric = EERMetric()
+eer_metric = EERMetric(device=0)
 pbar = tqdm(dataloader)
 for batch in pbar:
     with torch.no_grad():

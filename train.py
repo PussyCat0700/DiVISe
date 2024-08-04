@@ -868,9 +868,7 @@ def test_eer(
 ):
     global steps
     is_main = sw is not None
-    # Warning: Current EER value is rank 0 only
-    # TODO add all_gather across all processes
-    eer_metric = EERMetric()
+    eer_metric = EERMetric(device)
     model.eval()
     torch.cuda.empty_cache()
     # TODO magic path is bad

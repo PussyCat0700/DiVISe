@@ -1,4 +1,5 @@
 import argparse
+from datetime import timedelta
 import logging
 import math
 import os
@@ -61,6 +62,7 @@ def train_model(rank, world_size, args, avhubert_config, hifigan_config):
         dist.init_process_group(
             backend=hifigan_config.dist_config['dist_backend'],
             init_method=hifigan_config.dist_config['dist_url'],
+            timeout=timedelta(seconds=7200000),
             world_size=hifigan_config.num_gpus,
             rank=rank
         )
@@ -200,14 +202,14 @@ def train_model(rank, world_size, args, avhubert_config, hifigan_config):
                 global_step,
                 writer,
             )
-            test_eer(
-                model=generator,
-                device=device,
-                h=hifigan_config,
-                global_steps=global_step,
-                sw=writer
-            )
-            exit(0)
+        test_eer(
+            model=generator,
+            device=device,
+            h=hifigan_config,
+            global_steps=global_step,
+            sw=writer
+        )
+        exit(0)
     n_epochs = math.ceil(args.max_updates/(len(train_loader)*world_size))
     start_epoch = global_step // len(train_loader) + 1
 
@@ -438,9 +440,7 @@ def test_eer(
     sw:SummaryWriter=None,
 ):
     is_main = sw is not None
-    # Warning: Current EER value is rank 0 only
-    # TODO add all_gather across all processes
-    eer_metric = EERMetric()
+    eer_metric = EERMetric(device)
     model.eval()
     torch.cuda.empty_cache()
     # TODO magic path is bad
@@ -463,10 +463,8 @@ def test_eer(
         )
     test_loader, _ = get_dataloader(testset, 
                                     batch_size=4,
-                                    num_workers=h.num_gpus, 
                                     dist_sampler=h.num_gpus > 1,
                                     pin_memory=not h.num_gpus > 1,
-                                    drop_last=False,
                                     shuffle=False)
     with torch.no_grad():
         pbar = tqdm(test_loader, desc="EER testing in progress...", disable=not is_main)
