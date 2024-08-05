@@ -1,3 +1,4 @@
+from datetime import timedelta
 import math
 import logging
 import random
@@ -33,7 +34,7 @@ from env import AttrDict, build_env
 from dataset.meldataset import MelSpectrogramInverter,LogMelSpectrogram
 from models import AVHuBERTGenerator, MultiPeriodDiscriminator, MultiScaleDiscriminator, feature_loss, generator_loss,\
     discriminator_loss
-from utils import DataLoaderSeeder, TriStageLRScheduler, plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint, seed_everything, unwrap_module_discriminator, unwrap_module_generator
+from utils import DataLoaderSeeder, TriStageLRScheduler, plot_spectrogram, save_wav_16khz, scan_checkpoint, load_checkpoint, save_checkpoint, seed_everything, unwrap_module_discriminator, unwrap_module_generator
 from prosody_predictor.predictor import ProsodyPredictor
 from audio.eval_utils import AudioEvaluater, MyWav2Vec2Processor
 import light_hf_proxy
@@ -103,7 +104,7 @@ def train(rank, a, h, avhubert_config):
         wandb.init(project=proj_name, name=run_name, sync_tensorboard=True)
     if h.num_gpus > 1:
         init_process_group(backend=h.dist_config['dist_backend'], init_method=h.dist_config['dist_url'],
-                           world_size=h.dist_config['world_size'] * h.num_gpus, rank=rank)
+                           world_size=h.dist_config['world_size'] * h.num_gpus, rank=rank, timeout=timedelta(seconds=7200000),)
 
     seed_everything(h.seed)
     torch.cuda.set_device(rank)  # A very strong boost. See https://github.com/jik876/hifi-gan/pull/25
@@ -156,7 +157,7 @@ def train(rank, a, h, avhubert_config):
         hu_dict = {
             "hubert_hiddden":h.hubert_hidden  # 768 for hubert base
         }
-    use_farl = a.farl_ckpt is not None
+    use_farl = a.use_farl
     generator = AVHuBERTGenerator(hifigenerator_config=h,
                                   avhubert_model_config=avhubert_config["model"], 
                                   prosody_minmax_dict=prosody_minmax_dict,
@@ -180,8 +181,6 @@ def train(rank, a, h, avhubert_config):
 
     if a.avhubert_ckpt is not None:
         generator.load_pretrained_avhubertmodel(a.avhubert_ckpt, map_location=device)
-    if a.farl_ckpt is not None:
-        generator.load_pretrained_farlmodel(a.farl_ckpt, map_location=device)
     if a.hifigan_ckpt is not None and a.train_mode == VIDEO2WAV_MODE:
         # hifigan ckpt might be updated in training with 2wav mode
         hifigan_weight = torch.load(a.hifigan_ckpt, map_location=device)
@@ -211,7 +210,7 @@ def train(rank, a, h, avhubert_config):
             state_dict_g = load_checkpoint(cp_g, device)
             # TODO this is redundant but works like a trap. Careful if you want to lint them
             if h.unit_name is not None and h.unit_method in UNIT_METHODS:
-                generator.load_state_dict(state_dict_g['generator'])
+                generator.load_state_dict(state_dict_g['generator'], strict=not a.skip_ckptcheck)
             else:
                 generator.load_full_model_weight(state_dict_g['generator'], ignore_generator=True)
             steps = state_dict_g['steps'] + 1
@@ -705,8 +704,8 @@ def validate(
         gt_prefix = "gt"
         generated_prefix = "generated"
     elif mode == TEST_MODE:
-        gt_prefix = "gt(test)"
-        generated_prefix = f"generated(test)"
+        gt_prefix = "gt_test"
+        generated_prefix = f"generated_test"
     f_gt = open(os.path.join(a.checkpoint_path, f'{gt_prefix}.txt'), 'w+')
     f_gf = open(os.path.join(a.checkpoint_path, f'{generated_prefix}_gf.txt'), 'w+')
     f_vc = open(os.path.join(a.checkpoint_path, f'{generated_prefix}_vc.txt'), 'w+')   
@@ -824,28 +823,21 @@ def validate(
                 f_gt.write(line)
             if j <= 4:
                 # save first few validation sample
-                if epoch == 0:
-                    # ground truth will only be saved once
-                    sw.add_audio(f'{gt_prefix}/y_{j}', y[0], steps, h.sampling_rate)
-                    sw.add_text(f'{gt_prefix}/y_text_{j}', text[0], steps)
-                    if text_gf is not None:
-                        sw.add_text(f'{generated_prefix}/y_text_{j}', text_gf[0], steps)
-                    if text_vc is not None:
-                        sw.add_text(f'{generated_prefix}/y_text_{j}', text_vc[0], steps)
-                    sw.add_figure(f'{gt_prefix}/y_spec_{j}', plot_spectrogram(y_mel[0].cpu()), steps)
-                if a.train_mode == VIDEO2WAV_MODE:
-                    sw.add_audio(f'{generated_prefix}/y_hat_{j}', y_g_hat[0], steps, h.sampling_rate)
-                    y_hat_spec = logmel(y_g_hat[0])
-                    sw.add_figure(f'{generated_prefix}/y_hat_spec_{j}',
-                                    plot_spectrogram(y_hat_spec.squeeze(0).cpu().numpy()), steps)
-                elif a.train_mode == VIDEO2MEL_MODE:
-                    if y_g_hat is not None:
-                        sw.add_audio(f'{generated_prefix}/y_hat_griffin_lim{j}', y_g_hat[0], steps, h.sampling_rate)
-                    if y_g_hat_vc is not None:
-                        sw.add_audio(f'{generated_prefix}/y_hat_vocoder{j}', y_g_hat_vc[0], steps, h.sampling_rate)
-                    if y_g_avhubert_mel is not None:
-                        sw.add_figure(f'{generated_prefix}/y_hat_vanilla_mel_{j}',
-                                        plot_spectrogram(y_g_avhubert_mel[0].squeeze(0).cpu().numpy()), steps)
+                save_wav_16khz(os.path.join(sw.get_logdir(), f'{gt_prefix}_y_{j}.wav'), y[0])
+                sw.add_text(f'{gt_prefix}/y_text_{j}', text[0], steps)
+                if text_gf is not None:
+                    sw.add_text(f'{generated_prefix}/y_text_{j}', text_gf[0], steps)
+                if text_vc is not None:
+                    sw.add_text(f'{generated_prefix}/y_text_{j}', text_vc[0], steps)
+                sw.add_figure(f'{gt_prefix}/y_spec_{j}', plot_spectrogram(y_mel[0].cpu()), steps)
+                logging.info(f"saved {j} for {generated_prefix}")
+                if y_g_hat is not None:
+                    save_wav_16khz(os.path.join(sw.get_logdir(), f'{generated_prefix}_y_hat_griffin_lim{j}.wav'), y_g_hat[0].squeeze())
+                if y_g_hat_vc is not None:
+                    save_wav_16khz(os.path.join(sw.get_logdir(), f'{generated_prefix}_y_hat_vocoder{j}.wav'), y_g_hat_vc[0].squeeze())
+                if y_g_avhubert_mel is not None:
+                    sw.add_figure(f'{generated_prefix}/y_hat_vanilla_mel_{j}',
+                                    plot_spectrogram(y_g_avhubert_mel[0].squeeze(0).cpu().numpy()), steps)
 
         del w2v_model, w2v_processor
         for err_key, err_term in err_tot.items():
@@ -950,7 +942,8 @@ def main():
         ' as part of the model or in v2m mode (with gradient) as mel-to-audio converter in v2w mode(without gradient)')
     parser.add_argument('--bigvgan_ckpt', help='if specified, will load BigVGAN as mel-to-audio converter in v2w mode.')
     parser.add_argument('--pwg_ckpt', help='if specified, will load Parallel WaveGAN (PWG) as mel-to-audio converter in v2w mode.')
-    parser.add_argument('--farl_ckpt', help='if specified, will apply farl to boost speaker identity information')
+    parser.add_argument('--use_farl', action='store_true', help='if specified, will apply farl in your pretrained unit vocoder')
+    parser.add_argument('--skip_ckptcheck', action='store_true', help='if specified, will set strict=False in loading')
     parser.add_argument('--stdout_interval', default=5, type=int)
     parser.add_argument('--summary_interval', default=100, type=int)
     parser.add_argument('--wandb', action='store_true')

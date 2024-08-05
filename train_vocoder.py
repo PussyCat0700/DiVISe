@@ -32,6 +32,7 @@ from custom_hifigan.hifigan.discriminator import (
 )
 from custom_hifigan.hifigan.utils import load_checkpoint, save_checkpoint, plot_spectrogram
 from utils import DataLoaderSeeder
+import light_hf_proxy
 
 
 logging.basicConfig(level=logging.DEBUG)
@@ -181,6 +182,9 @@ def train_model(rank, world_size, args, avhubert_config, hifigan_config):
                                             num_workers=1, 
                                             drop_last=False,
                                             shuffle=False)
+
+    if args.test:
+        logger.info("will only perform test")
         if hifigan_config.unit_name is not None and hifigan_config.test_unit_name is not None:
             # You can apply trained kmeans model on valid set to get km labels just for reference.
             kwargs.update({
@@ -190,13 +194,18 @@ def train_model(rank, world_size, args, avhubert_config, hifigan_config):
             kwargs.update({
                 "fake_km_mask":True,
             })
-
-    if args.test:
-        logger.info("will only perform test")
+        avhubert_config["task"].max_sample_seconds = 10000 # Hacking: No Upper Limit
+        dataloading_kwargs.update(**kwargs)
+        testset = load_dataset("test", avhubert_config["task"], **dataloading_kwargs)
+        test_loader, _ = get_dataloader(testset, 
+                                        batch_size=hifigan_config.batch_size,
+                                        num_workers=1, 
+                                        drop_last=False,
+                                        shuffle=False)
         if rank == 0:
             average_validation_loss = validate(
                 generator,
-                validation_loader,
+                test_loader,
                 use_farl,
                 rank,
                 global_step,

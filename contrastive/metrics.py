@@ -1,9 +1,12 @@
+import math
 import numpy as np
 from scipy.optimize import brentq
 from scipy.interpolate import interp1d
+from sklearn.metrics import roc_curve
 import torch.nn.functional as F
 import torch
 from torchmetrics.classification import BinaryROC
+from torchmetrics.utilities.data import dim_zero_cat
 
 
 class EERMetric(BinaryROC):
@@ -11,17 +14,26 @@ class EERMetric(BinaryROC):
     def __init__(self, device):
         super().__init__()
         self.rank = device
+        self.nan_check = True  # disable at your own risk
         self.to(self.rank)
 
-    def update(self, preds: F.Tensor, target: F.Tensor) -> None:
+    def update(self, preds: F.Tensor, labels: F.Tensor) -> None:
         preds = torch.Tensor(preds).to(self.rank)
-        target = torch.LongTensor(target).to(self.rank)
-        return super().update(preds, target)
+        labels = torch.LongTensor(labels).to(self.rank)
+        return super().update(preds, labels)
+    
+    def _check_nans(self, x, name):
+        if any(math.isnan(x) for x in x): raise ValueError(f"NaN value found in {name}")
     
     def compute(self):
-        fpr, tpr, _ = super().compute()
-        fpr = fpr.cpu().numpy()
-        tpr = tpr.cpu().numpy()
+        # Taken from super().compute()
+        # Torchmetric's _binary_clf_curve yields different results from what is given by sklearn
+        # So we are manually implementing roc_curve here.
+        state = [dim_zero_cat(self.preds), dim_zero_cat(self.target)] if self.thresholds is None else self.confmat
+        fpr, tpr, thresholds = roc_curve(state[1].cpu().numpy(), state[0].cpu().numpy())
+        if self.nan_check:
+            self._check_nans(fpr, "fpr")
+            self._check_nans(tpr, "tpr")
         curve = lambda x: 1. - x - interp1d(fpr, tpr)(x)
         # Compute EER
         eer = brentq(curve, 0., 1.)
