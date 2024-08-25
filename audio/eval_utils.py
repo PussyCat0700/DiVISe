@@ -1,3 +1,4 @@
+import os
 import editdistance
 import numpy as np
 from pesq import pesq
@@ -7,7 +8,12 @@ from torchaudio.models.decoder import download_pretrained_files, ctc_decoder
 from cypesq import NoUtterancesError
 import speaker_encoder.inference as corentinJEncoder
 import logging
+from utils import save_wav_16khz
+
+
 logger = logging.Logger(__name__)
+
+
 # Torchaudio utils
 class BeamSearchDecoder:
     def __init__(self, pretrained="librispeech-4-gram", lm_weight=3.23, word_score=-0.26):
@@ -216,3 +222,33 @@ class AudioEvaluater:
                 self.err_tot[self.pesq_name] += audio_metric["pesq"] / n_batch
                 self.err_tot[self.secs_name] += audio_metric["secs"] / n_batch
             return hypoes
+
+
+class SampleSaver:
+    def __init__(self, outdir):
+        self.saved_n_total = 0
+        self.outdir = outdir
+
+    @staticmethod
+    def save_and_export(torch_item, input_dir_and_serial, output_dir_and_serial, specified_name):
+        specified_name = output_dir_and_serial+"_"+specified_name
+        save_wav_16khz(f"{specified_name}.mp3", torch_item)
+        os.system(f"ffmpeg -y -i {input_dir_and_serial}.mp4 -i {specified_name}.mp3 -c:v copy -map 0:v:0 -map 1:a:0 -shortest {specified_name}.mp4>{specified_name}.log 2>&1")
+
+    def __call__(self, wav_padding_mask, names, y_g_hat_vc=None, y_g_hat=None):
+        for i, (padding_mask, name) in enumerate(zip(wav_padding_mask, names)):
+            item_g_hat = None
+            item_g_hat_vc = None
+            input_dir_and_serial = ''.join(os.path.join(name["audio_basedir"], name["audio_id"]).split('audio'))
+            rel_path = name['audio_basedir'].split('test')[-1].strip('/')
+            output_dir_and_serial = os.path.join(self.outdir, rel_path)
+            os.makedirs(output_dir_and_serial, exist_ok=True)
+            output_dir_and_serial = os.path.join(output_dir_and_serial, name["audio_id"])
+            if y_g_hat is not None:
+                item_g_hat = y_g_hat[i].masked_select(~padding_mask)
+                self.save_and_export(item_g_hat, input_dir_and_serial, output_dir_and_serial, "gf")
+            if y_g_hat_vc is not None:
+                item_g_hat_vc = y_g_hat_vc[i].masked_select(~padding_mask)
+                self.save_and_export(item_g_hat_vc, input_dir_and_serial, output_dir_and_serial, "vc")
+            self.saved_n_total += 1
+        return self.saved_n_total

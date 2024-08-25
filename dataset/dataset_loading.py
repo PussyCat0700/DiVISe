@@ -155,6 +155,7 @@ def load_dataset_eer(split: str,
         image_aug = cfg.image_aug if split == 'train' else False
         # noise_fn, noise_snr = f"{self.cfg.noise_wav}/{split}.tsv" if self.cfg.noise_wav is not None else None, eval(self.cfg.noise_snr)
         # noise_num = self.cfg.noise_num
+        max_sample_seconds=cfg.max_sample_seconds
         pad_audio=cfg.pad_audio
         random_crop=cfg.random_crop
         modalities=cfg.modalities
@@ -164,7 +165,7 @@ def load_dataset_eer(split: str,
             label_paths=None,  # a path list where you store your dictionaries
             max_keep_sample_size=100000,
             min_keep_sample_size=cfg.min_sample_size,  # None
-            max_sample_seconds=100000,
+            max_sample_seconds=max_sample_seconds,
             pad_audio=pad_audio,  # Should be True
             normalize=cfg.normalize,  # True
             store_labels=False,

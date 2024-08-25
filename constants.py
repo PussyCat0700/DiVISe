@@ -16,3 +16,6 @@ GENERATOR_METHODS = MEL_VOCODER_METHODS + UNIT_METHODS
 SIMCLR = "mini_batch"
 MOCO = "momentum_contrast"
 CONTRAST_METHODS = [SIMCLR, MOCO,]
+# Evaluation Modes
+TEST_MODE = "test"
+VALID_MODE = "validation"

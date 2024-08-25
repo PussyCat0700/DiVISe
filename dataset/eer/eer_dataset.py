@@ -46,7 +46,7 @@ class VideoPairDataset(ContrastivePairTestDataset):
         return videoitem['is_positive'], (video0, video1)  # [2, ...]
     
     def __len__(self):
-        return len(self.dataset)
+        return len(self.pairs)
 
     def collater(self, batch):
         # Step 1: Split each tensor into two parts and organize them into two groups

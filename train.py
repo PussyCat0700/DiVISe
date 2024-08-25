@@ -10,7 +10,8 @@ import torchmetrics
 from tqdm import tqdm
 from constants import GRIFFINLIM,\
     GENERATOR_METHODS, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD, BIGVGAN_NO_GRAD, PWG_NO_GRAD,\
-    UNIT_METHODS, UNIT_SPEECH_TOKENIZER_NO_GRAD, UNIT_SOFT
+    UNIT_METHODS, UNIT_SPEECH_TOKENIZER_NO_GRAD, UNIT_SOFT, \
+    VALID_MODE, TEST_MODE
 
 from contrastive.metrics import EERMetric
 from dataset import load_avhubert_config, load_hifigan_config, load_dataset, get_dataloader
@@ -36,7 +37,7 @@ from models import AVHuBERTGenerator, MultiPeriodDiscriminator, MultiScaleDiscri
     discriminator_loss
 from utils import DataLoaderSeeder, TriStageLRScheduler, plot_spectrogram, save_wav_16khz, scan_checkpoint, load_checkpoint, save_checkpoint, seed_everything, unwrap_module_discriminator, unwrap_module_generator
 from prosody_predictor.predictor import ProsodyPredictor
-from audio.eval_utils import AudioEvaluater, MyWav2Vec2Processor
+from audio.eval_utils import AudioEvaluater, MyWav2Vec2Processor, SampleSaver
 import light_hf_proxy
 
 
@@ -51,8 +52,6 @@ logging.getLogger(__name__)
 
 VIDEO2MEL_MODE = "v2m"
 VIDEO2WAV_MODE = "v2w"
-TEST_MODE = "test"
-VALID_MODE = "validation"
 metrics = {}
 best_metrics = None
 steps = 0
@@ -655,6 +654,10 @@ def train(rank, a, h, avhubert_config):
             # End of a train epoch
     if rank == 0:
         print('testing wer and so on.')
+        tmpdir = None
+        if a.save_samples:
+            tmpdir = os.path.join(a.checkpoint_path, 'test_samples')
+            os.makedirs(tmpdir, exist_ok=True)
         test_args = {
                 "generator":generator.module if h.num_gpus > 1 else generator,
                 "w2v_processor":w2v_processor,
@@ -668,17 +671,19 @@ def train(rank, a, h, avhubert_config):
                 "mode":TEST_MODE,
                 "sw":sw,
                 "unit_key":unit_key,
+                "tmpdir":tmpdir,
             }
         validate(**test_args)
-    # Ultimate test
-    print('testing eer.')
-    test_eer(
-        model=generator,
-        device=device,
-        args=a,
-        h=h,
-        sw=sw,
-    )
+    if a.test_all:
+        # Ultimate test. Time consuming
+        print('testing eer.')
+        test_eer(
+            model=generator,
+            device=device,
+            args=a,
+            h=h,
+            sw=sw,
+        )
 
 
 def validate(
@@ -694,6 +699,7 @@ def validate(
     mel2wav_inverter:MelSpectrogramInverter=None,
     mode=VALID_MODE,
     sw:SummaryWriter=None,
+    tmpdir:str=None,
     ):
     global metrics, best_metrics, steps
     generator.eval()
@@ -709,6 +715,8 @@ def validate(
     f_gt = open(os.path.join(a.checkpoint_path, f'{gt_prefix}.txt'), 'w+')
     f_gf = open(os.path.join(a.checkpoint_path, f'{generated_prefix}_gf.txt'), 'w+')
     f_vc = open(os.path.join(a.checkpoint_path, f'{generated_prefix}_vc.txt'), 'w+')   
+    if tmpdir is not None:
+        samplesaver = SampleSaver(tmpdir)
     with torch.no_grad():
         audioeval_gf = AudioEvaluater(
             w2v_processor=w2v_processor, 
@@ -778,6 +786,9 @@ def validate(
                     y_g_hat = mel2wav_inverter(y_g_avhubert_mel.detach().transpose(-1, -2))
                 if generator.with_generator:
                     y_g_hat_vc = generator_out["wav_generated"]
+            if tmpdir:
+                # AV sync export
+                saved_samples = samplesaver(wav_padding_mask, avhubert_source_batch["name"], y_g_hat_vc, y_g_hat)
             if h.unit_name is not None and avhubert_source_batch[unit_key] is not None:
                 with torch.inference_mode():
                     if h.unit_method in GENERATOR_METHODS:
@@ -809,7 +820,11 @@ def validate(
                 text_gf = audioeval_gf.eval_metrics(y_g_hat, y, wav_padding_mask, gt_texts)
             if y_g_hat_vc is not None:
                 text_vc = audioeval_vocoder.eval_metrics(y_g_hat_vc, y, wav_padding_mask, gt_texts)
-            pbar.set_description(f'current wer={err_tot["wer_vocoder"]}(vc), {err_tot["wer"]}(gf)')
+            if tmpdir:
+                pbar_desc = f"{saved_samples=}"
+            else:
+                pbar_desc = f'current wer={err_tot["wer_vocoder"]}(vc), {err_tot["wer"]}(gf)'
+            pbar.set_description(pbar_desc)
             if y_g_avhubert_mel is not None:
                 err_tot["mel_spec_error_avhubert"] += F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_avhubert_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
             if text_gf is not None:
@@ -951,10 +966,15 @@ def main():
     parser.add_argument('--decay_melloss', action='store_true', help='(deprecated) if specified, will decay mel loss in first 1/5 of total epochs.')
     parser.add_argument('--train_mode', choices=[VIDEO2MEL_MODE, VIDEO2WAV_MODE], default=VIDEO2MEL_MODE, help='v2w(video2wav), v2m(video2mel)')
     parser.add_argument('--test', action='store_true', help='run test only')
+    parser.add_argument('--test_all', action='store_true', help='equivalent to --test but with eer test which should be time consuming (Multi-GPU supported).')
     parser.add_argument('--n_ckpts', type=int, default=10, help='number of checkpoints to be saved.')
+    parser.add_argument('--save_samples', action='store_true', help='If enabled, will save video-audio synced files in checkpointdir which is used for LSE-C/D and MOS evaluation.')
 
     a = parser.parse_args()
     a.real_prosody = not a.predicted_prosody
+    if a.save_samples or a.test_all:
+        # Clearly not doing training in this case
+        a.test = True
     logging.info(f'Proceeding with train_mode {a.train_mode}')
     if a.checkpoint_path == default_ckpt_dir:
         logging.warning(f"You're using default checkpoint dir {default_ckpt_dir}.\n"+\
