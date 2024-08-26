@@ -618,7 +618,7 @@ if __name__ == "__main__":
     logger.handlers.clear()
 
     world_size = torch.cuda.device_count()
-    max_updates_allowed = 400_000
+    max_updates_allowed = 400_000 * world_size
     avhubert_config = load_avhubert_config(args.avhubert_config)
     avhubert_config["task"].max_sample_seconds = SEGMENT_LENGTH / SAMPLE_RATE
     hifigan_config = load_hifigan_config(args.hifigan_config)
