@@ -65,11 +65,13 @@ def initialize_val_terms(train_mode:str, classification:bool):
         "pesq":0,
         "secs":0,
         "wer":0,
+        "mcd":0,
         "wer_vocoder":0,
         "stoi_vocoder":0,
         "estoi_vocoder":0,
         "pesq_vocoder":0,
         "secs_vocoder":0,
+        "mcd_vocoder":0,
         "algorithmic":set(),
     }
     if train_mode == VIDEO2WAV_MODE:

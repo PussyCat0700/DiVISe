@@ -9,6 +9,8 @@ from cypesq import NoUtterancesError
 import speaker_encoder.inference as corentinJEncoder
 import logging
 from utils import save_wav_16khz
+from librosa.feature import melspectrogram
+from mel_cepstral_distance import get_metrics_mels
 
 
 logger = logging.Logger(__name__)
@@ -149,11 +151,13 @@ def _compute_audio_metrics(deg, ref, rate):
     total_pesq = pesq(16000, x, deg, 'nb')
     total_stoi = stoi(x, deg, rate, extended=False)
     total_estoi = stoi(x, deg, rate, extended=True)
+    total_mcd = get_mel_cepstral_distance(x, deg)
     
     return {
         "pesq": total_pesq,  # -0.5~4.5, higher the better
         "stoi": total_stoi,  # 0.0~1.0, higher the better
         "estoi": total_estoi,
+        "mcd": total_mcd,
     }
 
 class AudioEvaluater:
@@ -168,6 +172,7 @@ class AudioEvaluater:
         self.estoi_name = "estoi"
         self.pesq_name = "pesq"
         self.secs_name = "secs"
+        self.mcd_name = "mcd"
         self.n_err = 0
         self.n_total = 0
         if self.postfix is not None:
@@ -176,6 +181,7 @@ class AudioEvaluater:
             self.estoi_name += f'_{self.postfix}'
             self.pesq_name += f'_{self.postfix}'
             self.secs_name += f'_{self.postfix}'
+            self.mcd_name += f'_{self.postfix}'
         # TODO magic path is bad
         from pathlib import Path
         se_path = Path("/data1/yfliu/model/CorentinJ/encoder.pt")
@@ -221,6 +227,7 @@ class AudioEvaluater:
                 self.err_tot[self.estoi_name] += audio_metric["estoi"] / n_batch
                 self.err_tot[self.pesq_name] += audio_metric["pesq"] / n_batch
                 self.err_tot[self.secs_name] += audio_metric["secs"] / n_batch
+                self.err_tot[self.mcd_name] += audio_metric["mcd"] / n_batch
             return hypoes
 
 
@@ -252,3 +259,54 @@ class SampleSaver:
                 self.save_and_export(item_g_hat_vc, input_dir_and_serial, output_dir_and_serial, "vc")
             self.saved_n_total += 1
         return self.saved_n_total
+
+
+def get_mel_cepstral_distance(audio_1, audio_2, *, hop_length: int = 256, n_fft: int = 1024, window: str = 'hamming', center: bool = False, n_mels: int = 20, htk: bool = True, norm=None, dtype=np.float64, n_mfcc: int = 16, use_dtw: bool = True):
+  """
+  See get_metrics_wavs function in mel_cepstral_distance for docs.
+  """
+
+  sr_1 = sr_2 = 16_000
+
+  mel_spectrogram1 = melspectrogram(
+    y=audio_1,
+    sr=sr_1,
+    hop_length=hop_length,
+    n_fft=n_fft,
+    window=window,
+    center=center,
+    S=None,
+    pad_mode="constant",
+    power=2.0,
+    win_length=None,
+    # librosa.filters.mel arguments:
+    n_mels=n_mels,
+    htk=htk,
+    norm=norm,
+    dtype=dtype,
+    fmin=0.0,
+    fmax=None,
+  )
+
+  mel_spectrogram2 = melspectrogram(
+    y=audio_2,
+    sr=sr_2,
+    hop_length=hop_length,
+    n_fft=n_fft,
+    window=window,
+    center=center,
+    S=None,
+    pad_mode="constant",
+    power=2.0,
+    win_length=None,
+    # librosa.filters.mel arguments:
+    n_mels=n_mels,
+    htk=htk,
+    norm=norm,
+    dtype=dtype,
+    fmin=0.0,
+    fmax=None,
+  )
+
+  mcd, penalty, _ = get_metrics_mels(mel_spectrogram1, mel_spectrogram2, n_mfcc=n_mfcc, take_log=True, use_dtw=use_dtw)
+  return mcd+penalty

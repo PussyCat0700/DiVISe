@@ -393,6 +393,7 @@ def validate(
         "pesq":0,
         "wer":0,
         "secs":0,
+        "mcd":0,
         'algorithmic':set(),
     }
     if mode == VALID_MODE:
