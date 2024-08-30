@@ -22,7 +22,7 @@ import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm
 import wandb
-from audio.eval_utils import AudioEvaluater, MyWav2Vec2Processor, SampleSaver
+from audio.eval_utils import MetricsEvaluater, MyWav2Vec2Processor, SampleSaver
 from transformers import Wav2Vec2ForCTC
 from constants import HIFIGAN_NO_GRAD, TEST_MODE, UNIT_HIFIGAN_NO_GRAD, VALID_MODE
 
@@ -387,15 +387,6 @@ def validate(
     if rank != 0:
         return
     generator.eval()
-    err_tot = {
-        "stoi":0,
-        "estoi":0,
-        "pesq":0,
-        "wer":0,
-        "secs":0,
-        "mcd":0,
-        'algorithmic':set(),
-    }
     if mode == VALID_MODE:
         gt_prefix = "gt"
         generated_prefix = "generated"
@@ -406,10 +397,9 @@ def validate(
         samplesaver = SampleSaver(tmpdir)
     w2v_model = Wav2Vec2ForCTC.from_pretrained("facebook/wav2vec2-large-960h-lv60-self").to(rank)
     w2v_processor = MyWav2Vec2Processor.from_pretrained("facebook/wav2vec2-large-960h-lv60-self")
-    audioeval = AudioEvaluater(
+    audioeval = MetricsEvaluater(
         w2v_processor=w2v_processor, 
         w2v_model=w2v_model,
-        err_tot=err_tot,
         device=torch.device(f'cuda:{rank}'),
     )
     logmel = LogMelSpectrogram().to(rank)
@@ -447,7 +437,7 @@ def validate(
         if tmpdir:
             pbar_desc = f"{saved_samples=}"
         else:
-            pbar_desc = f'current wer={err_tot["wer"]}'
+            pbar_desc = f'current wer={audioeval.err_tot["wer"]}'
         pbar.set_description(pbar_desc)
         if j <= NUM_GENERATED_EXAMPLES:
             writer.add_text(
@@ -468,10 +458,10 @@ def validate(
                 global_step,
             )
     del w2v_model, w2v_processor
-    for err_key, err_term in err_tot.items():
+    for err_key, err_term in audioeval.err_tot.items():
         if err_key == 'algorithmic':
             continue
-        if err_key not in err_tot['algorithmic']:
+        if err_key not in audioeval.err_tot['algorithmic']:
             err_term = err_term / (j+1)
         writer.add_scalar(f"generated/{err_key}", err_term, global_step)
     return average_validation_loss

@@ -37,7 +37,7 @@ from models import AVHuBERTGenerator, MultiPeriodDiscriminator, MultiScaleDiscri
     discriminator_loss
 from utils import DataLoaderSeeder, TriStageLRScheduler, plot_spectrogram, save_wav_16khz, scan_checkpoint, load_checkpoint, save_checkpoint, seed_everything, unwrap_module_discriminator, unwrap_module_generator
 from prosody_predictor.predictor import ProsodyPredictor
-from audio.eval_utils import AudioEvaluater, MyWav2Vec2Processor, SampleSaver
+from audio.eval_utils import MetricsEvaluater, MyWav2Vec2Processor, SampleSaver
 import light_hf_proxy
 
 
@@ -55,37 +55,6 @@ VIDEO2WAV_MODE = "v2w"
 metrics = {}
 best_metrics = None
 steps = 0
-
-
-def initialize_val_terms(train_mode:str, classification:bool):
-    val_err_tot = {
-        "mel_spec_error_avhubert": 0,
-        "stoi":0,
-        "estoi":0,
-        "pesq":0,
-        "secs":0,
-        "wer":0,
-        "mcd":0,
-        "wer_vocoder":0,
-        "stoi_vocoder":0,
-        "estoi_vocoder":0,
-        "pesq_vocoder":0,
-        "secs_vocoder":0,
-        "mcd_vocoder":0,
-        "algorithmic":set(),
-    }
-    if train_mode == VIDEO2WAV_MODE:
-        val_err_tot.update({
-            "mel_spec_error_generator":0,
-        })
-    if classification:
-        val_err_tot.update({
-            "acc_hu_class":0,
-            "recall_hu_class":0,
-            "precision_hu_class":0,
-            "auc_hu_class":0,
-        })
-    return val_err_tot
 
 def train(rank, a, h, avhubert_config):
     global metrics, best_metrics, steps
@@ -706,8 +675,10 @@ def validate(
     global metrics, best_metrics, steps
     generator.eval()
     logmel = LogMelSpectrogram().to(device)
+    err_tot = {"mel_spec_error_avhubert": 0}
+    with_classification = h.unit_name is not None
+    num_classes = None
     torch.cuda.empty_cache()
-    err_tot = initialize_val_terms(a.train_mode, h.unit_name is not None)
     if mode == VALID_MODE:
         gt_prefix = "gt"
         generated_prefix = "generated"
@@ -719,29 +690,24 @@ def validate(
     f_vc = open(os.path.join(a.checkpoint_path, f'{generated_prefix}_vc.txt'), 'w+')   
     if tmpdir is not None:
         samplesaver = SampleSaver(tmpdir)
+    if with_classification:
+        num_classes = h.k
+        if generator.with_extra_padding_unit:
+            num_classes += 1
     with torch.no_grad():
-        audioeval_gf = AudioEvaluater(
+        audioeval_gf = MetricsEvaluater(
             w2v_processor=w2v_processor, 
             w2v_model=w2v_model,
-            err_tot=err_tot,
             device=device,
             )
-        audioeval_vocoder = AudioEvaluater(
+        audioeval_vocoder = MetricsEvaluater(
             w2v_processor=w2v_processor, 
             w2v_model=w2v_model,
-            err_tot=err_tot,
             device=device,
-            postfix="vocoder"
+            postfix="vocoder",
+            num_classes=num_classes,
             )
         pbar = tqdm(loader, desc="Validation in progress...")
-        if h.unit_name is not None:
-            num_classes, task, average = h.k, "multiclass", "macro"
-            if generator.with_extra_padding_unit:
-                num_classes += 1
-            valid_acc = torchmetrics.Accuracy(task=task, num_classes=num_classes, average=average).to(device)
-            valid_recall = torchmetrics.Recall(task=task, num_classes=num_classes, average=average).to(device)
-            valid_precision = torchmetrics.Precision(task=task, num_classes=num_classes, average=average).to(device)
-            valid_auc = torchmetrics.AUROC(task=task, num_classes=num_classes, average=average).to(device)
         for j, batch in enumerate(pbar):
             avhubert_source_batch = batch["net_input"]["source"]
             y = avhubert_source_batch["audio"].to(device)
@@ -779,18 +745,15 @@ def validate(
             y_g_avhubert_mel = generator_out["melspec_out"]
             y_g_hat = None
             y_g_hat_vc = None
-            if a.train_mode == VIDEO2WAV_MODE:
-                y_g_hat = generator_out["wav_generated"].detach()
-                y_g_hat_mel = logmel(y_g_hat.squeeze(1))
-                err_tot["mel_spec_error_generator"] += F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_hat_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
-            elif a.train_mode == VIDEO2MEL_MODE:
-                if y_g_avhubert_mel is not None:
-                    y_g_hat = mel2wav_inverter(y_g_avhubert_mel.detach().transpose(-1, -2))
-                if generator.with_generator:
-                    y_g_hat_vc = generator_out["wav_generated"]
+            if y_g_avhubert_mel is not None:
+                y_g_hat = mel2wav_inverter(y_g_avhubert_mel.detach().transpose(-1, -2))
+            if generator.with_generator:
+                y_g_hat_vc = generator_out["wav_generated"]
             if tmpdir:
                 # AV sync export
                 saved_samples = samplesaver(wav_padding_mask, avhubert_source_batch["name"], y_g_hat_vc, y_g_hat)
+            preds_km = None
+            targets_km = None
             if h.unit_name is not None and avhubert_source_batch[unit_key] is not None:
                 with torch.inference_mode():
                     if h.unit_method in GENERATOR_METHODS:
@@ -809,23 +772,15 @@ def validate(
                         sim_matrix = F.cosine_similarity(embedding_predictions, embedding_targets, dim=-1).softmax(dim=0)  # [k, B, T]
                         preds_km = sim_matrix.permute(1, 0, 2)  # [B, k, T]
                     targets_km = avhubert_source_batch[unit_key].to(device)
-                    acc = valid_acc(preds_km, targets_km).item()
-                    recall = valid_recall(preds_km, targets_km).item()
-                    precision = valid_precision(preds_km, targets_km).item()
-                    auc = valid_auc(preds_km, targets_km).item()
-                    err_tot["acc_hu_class"]+=acc
-                    err_tot["recall_hu_class"] += recall
-                    err_tot["precision_hu_class"] += precision
-                    err_tot["auc_hu_class"] += auc
             text_gf, text_vc = None, None
             if y_g_hat is not None:
                 text_gf = audioeval_gf.eval_metrics(y_g_hat, y, wav_padding_mask, gt_texts)
             if y_g_hat_vc is not None:
-                text_vc = audioeval_vocoder.eval_metrics(y_g_hat_vc, y, wav_padding_mask, gt_texts)
+                text_vc = audioeval_vocoder.eval_metrics(y_g_hat_vc, y, wav_padding_mask, gt_texts, preds_km=preds_km, targets_km=targets_km)
             if tmpdir:
                 pbar_desc = f"{saved_samples=}"
             else:
-                pbar_desc = f'current wer={err_tot["wer_vocoder"]}(vc), {err_tot["wer"]}(gf)'
+                pbar_desc = f'current wer={audioeval_vocoder.err_tot["wer_vocoder"]}(vc), {audioeval_gf.err_tot["wer"]}(gf)'
             pbar.set_description(pbar_desc)
             if y_g_avhubert_mel is not None:
                 err_tot["mel_spec_error_avhubert"] += F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_avhubert_mel.masked_select(~mel_padding_mask.unsqueeze(1))).item()
@@ -857,6 +812,7 @@ def validate(
                                     plot_spectrogram(y_g_avhubert_mel[0].squeeze(0).cpu().numpy()), steps)
 
         del w2v_model, w2v_processor
+        err_tot = {**err_tot, **audioeval_gf.err_tot, **audioeval_vocoder.err_tot}
         for err_key, err_term in err_tot.items():
             if err_key == 'algorithmic':
                 continue
@@ -996,13 +952,9 @@ def main():
         port = int(splits[-1])
         port -= random.randint(100, 1000)
         h.dist_config['dist_url'] = ':'.join(splits[:-1]+[str(port)])
-        
-    val_term_for_test = initialize_val_terms(a.train_mode, h.unit_name is not None)
     # simple hacking for v2m mode
     if a.train_mode == VIDEO2MEL_MODE and h.save_on_metric == 'mel_spec_error_generator':
         h.save_on_metric = "mel_spec_error_avhubert"
-    if h.save_on_metric not in val_term_for_test.keys():
-        raise RuntimeError(f"metric {h.save_on_metric} does not exist but is specified as save_on_metric in {a.hifigan_config}")
     build_env(a.hifigan_config, 'hifigan_config.json', a.checkpoint_path)
     OmegaConf.save(avhubert_config, os.path.join(a.checkpoint_path, 'avhubert_config.yaml'))
 

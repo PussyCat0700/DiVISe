@@ -1,10 +1,12 @@
 import os
 import editdistance
+import nisqalib
 import numpy as np
 from pesq import pesq
 from pystoi import stoi
 import torch
 from torchaudio.models.decoder import download_pretrained_files, ctc_decoder
+import torchmetrics
 from cypesq import NoUtterancesError
 import speaker_encoder.inference as corentinJEncoder
 import logging
@@ -105,26 +107,6 @@ class MyWav2Vec2Processor(Wav2Vec2Processor):
 
         return normed_input_values
 # others
-def compute_audio_metrics_torch(degs:torch.Tensor, refs:torch.Tensor, rate:int, wav_padding_mask:torch.Tensor=None):
-    waveforms_stacked = torch.stack(
-        [refs, degs],
-        dim=0,
-    )  # [2, B, T]
-    waveforms_stacked = waveforms_stacked.reshape(-1, waveforms_stacked.shape[-1])
-    wav_padding_mask_stacked = wav_padding_mask.repeat(2, 1)
-    secs_list = corentinJEncoder.compute_similarity(
-        waveforms_stacked,
-        wav_padding_mask_stacked,
-        max_audio_sample_size=4*16000,  # 4 seconds. Longer is better but consumes more mem.
-        pad_audio=False,
-    ).tolist()
-    degs = [x.masked_select(mask).cpu().numpy() for mask, x in zip(wav_padding_mask, degs.squeeze().detach())]
-    refs = [x.masked_select(mask).cpu().numpy() for mask, x in zip(wav_padding_mask, refs.squeeze().detach())]
-    rets = compute_audio_metrics_numpy(degs, refs, rate)
-    for i, ret in enumerate(rets):
-        ret["secs"] = secs_list[i]
-    return rets
-
 
 def compute_audio_metrics_numpy(degs:np.array, refs:np.array, rate:int):
     """
@@ -160,12 +142,25 @@ def _compute_audio_metrics(deg, ref, rate):
         "mcd": total_mcd,
     }
 
-class AudioEvaluater:
-    def __init__(self, w2v_processor:MyWav2Vec2Processor, w2v_model, err_tot, device, postfix=None) -> None:
+class MetricsEvaluater:
+    def __init__(self, w2v_processor:MyWav2Vec2Processor, w2v_model, device, postfix:str=None, num_classes:int=None) -> None:
         self.w2v_processor = w2v_processor
         self.w2v_model = w2v_model
+        self.nisqa_model = nisqalib.NisqaModel("nisqa")
         self.postfix = postfix
-        self.err_tot = err_tot
+        self.err_tot = {
+            "stoi":0,
+            "estoi":0,
+            "pesq":0,
+            "secs":0,
+            "wer":0,
+            "mcd":0,
+            "mos_pred":0,
+            "noi_pred":0,
+            "dis_pred":0,
+            "col_pred":0,
+            "loud_pred":0,
+        }   
         self.n_audio_metrics = 0
         self.wer_name = "wer"
         self.stoi_name = "stoi"
@@ -173,15 +168,42 @@ class AudioEvaluater:
         self.pesq_name = "pesq"
         self.secs_name = "secs"
         self.mcd_name = "mcd"
+        self.nisqa_overall_name = "mos_pred"
+        self.nisqa_noise_name = "noi_pred"
+        self.nisqa_dis_name = "dis_pred"
+        self.nisqa_col_name = "col_pred"
+        self.nisqa_loud_name = "loud_pred"
+        self.num_classes = num_classes
+        self.unit_acc_name = "acc_hu_class"
+        self.unit_recall_name = "recall_hu_class"
+        self.unit_precision_name = "precision_hu_class"
+        self.unit_auc_name = "auc_hu_class"
         self.n_err = 0
         self.n_total = 0
         if self.postfix is not None:
+            self.err_tot = {f'{key}_{self.postfix}': 0 for key in self.err_tot}
             self.wer_name += f'_{self.postfix}'
             self.stoi_name += f'_{self.postfix}'
             self.estoi_name += f'_{self.postfix}'
             self.pesq_name += f'_{self.postfix}'
             self.secs_name += f'_{self.postfix}'
             self.mcd_name += f'_{self.postfix}'
+            self.nisqa_overall_name += f'_{self.postfix}'
+            self.nisqa_noise_name += f'_{self.postfix}'
+            self.nisqa_dis_name += f'_{self.postfix}'
+            self.nisqa_col_name += f'_{self.postfix}'
+            self.nisqa_loud_name += f'_{self.postfix}'
+        self.err_tot["algorithmic"] = set()
+        if self.num_classes:
+            task, average = "multiclass", "macro"
+            self.acc = torchmetrics.Accuracy(task=task, num_classes=num_classes, average=average).to(device)
+            self.recall = torchmetrics.Recall(task=task, num_classes=num_classes, average=average).to(device)
+            self.precision = torchmetrics.Precision(task=task, num_classes=num_classes, average=average).to(device)
+            self.auc = torchmetrics.AUROC(task=task, num_classes=num_classes, average=average).to(device)
+            self.err_tot['algorithmic'].add(self.unit_acc_name)
+            self.err_tot['algorithmic'].add(self.unit_recall_name)
+            self.err_tot['algorithmic'].add(self.unit_precision_name)
+            self.err_tot['algorithmic'].add(self.unit_auc_name)
         # TODO magic path is bad
         from pathlib import Path
         se_path = Path("/data1/yfliu/model/CorentinJ/encoder.pt")
@@ -202,8 +224,34 @@ class AudioEvaluater:
         transcription = self.w2v_processor.batch_decode(predicted_ids)
         
         return transcription
+    
+    def compute_audio_metrics_torch(self, degs:torch.Tensor, refs:torch.Tensor, wav_padding_mask:torch.Tensor=None):
+        waveforms_stacked = torch.stack(
+            [refs, degs],
+            dim=0,
+        )  # [2, B, T]
+        waveforms_stacked = waveforms_stacked.reshape(-1, waveforms_stacked.shape[-1])
+        wav_padding_mask_stacked = wav_padding_mask.repeat(2, 1)
+        secs_list = corentinJEncoder.compute_similarity(
+            waveforms_stacked,
+            wav_padding_mask_stacked,
+            max_audio_sample_size=4*16000,  # 4 seconds. Longer is better but consumes more mem.
+            pad_audio=False,
+        ).tolist()
+        degs = [x.masked_select(mask).cpu().numpy() for mask, x in zip(wav_padding_mask, degs.squeeze().detach())]
+        refs = [x.masked_select(mask).cpu().numpy() for mask, x in zip(wav_padding_mask, refs.squeeze().detach())]
+        nisqa_results = []
+        for audio in degs:
+            result = self.nisqa_model.predict(audio[None, ...], 16000)
+            nisqa_results.append(result)
+        rets = compute_audio_metrics_numpy(degs, refs, 16000)
+        for i, ret in enumerate(rets):
+            ret["secs"] = secs_list[i]
+            for key, term in nisqa_results[i].items():
+                ret[key] = term
+        return rets
         
-    def eval_metrics(self, g_hat, y, wav_padding_mask, gt_texts):      
+    def eval_metrics(self, g_hat, y, wav_padding_mask, gt_texts, preds_km=None, targets_km=None):      
         with torch.inference_mode():  
             # model definition can be found in https://pytorch.org/audio/stable/_modules/torchaudio/models/wav2vec2/model.html
             if len(g_hat.shape) > 2:
@@ -220,7 +268,16 @@ class AudioEvaluater:
                 self.n_total += len(ref)
                 hypoes.append(' '.join(hypo))
             self.err_tot[self.wer_name] = self.n_err / self.n_total
-            audio_metrics = compute_audio_metrics_torch(g_hat, y, 16000, ~wav_padding_mask)
+            if self.num_classes:
+                self.acc.update(preds_km, targets_km)
+                self.recall.update(preds_km, targets_km)
+                self.precision.update(preds_km, targets_km)
+                self.auc.update(preds_km, targets_km)
+                self.err_tot[self.unit_acc_name] = self.acc.compute()
+                self.err_tot[self.unit_recall_name] = self.recall.compute()
+                self.err_tot[self.unit_precision_name] = self.precision.compute()
+                self.err_tot[self.unit_auc_name] = self.auc.compute()
+            audio_metrics = self.compute_audio_metrics_torch(g_hat, y, ~wav_padding_mask)
             n_batch = len(audio_metrics)
             for audio_metric in audio_metrics:
                 self.err_tot[self.stoi_name] += audio_metric["stoi"] / n_batch
@@ -228,6 +285,11 @@ class AudioEvaluater:
                 self.err_tot[self.pesq_name] += audio_metric["pesq"] / n_batch
                 self.err_tot[self.secs_name] += audio_metric["secs"] / n_batch
                 self.err_tot[self.mcd_name] += audio_metric["mcd"] / n_batch
+                self.err_tot[self.nisqa_overall_name] += audio_metric["mos_pred"] / n_batch
+                self.err_tot[self.nisqa_noise_name] += audio_metric["noi_pred"] / n_batch
+                self.err_tot[self.nisqa_dis_name] += audio_metric["dis_pred"] / n_batch
+                self.err_tot[self.nisqa_col_name] += audio_metric["col_pred"] / n_batch
+                self.err_tot[self.nisqa_loud_name] += audio_metric["loud_pred"] / n_batch
             return hypoes
 
 
