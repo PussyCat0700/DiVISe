@@ -71,6 +71,7 @@ class LogMelSpectrogram(torch.nn.Module):
             onesided=True,
             n_mels=num_mels,
             mel_scale="slaney",
+            f_max=8000,
         )
 
     def forward(self, wav):
