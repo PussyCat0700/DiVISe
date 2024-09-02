@@ -7,8 +7,6 @@ PWG_NO_GRAD = "vocoder_pwg_nogradient"
 # This is configured for HiFi-GAN itself. Will only be used in ReVISE.
 UNIT_HIFIGAN_NO_GRAD = 'HuBERT Label as input (ReVISE)'
 UNIT_SPEECH_TOKENIZER_NO_GRAD = 'SpeechTokenizer as vocoder'
-# Soft or hard prediction. Has no effect on ReVISE.
-UNIT_SOFT = "soft"
 UNIT_METHODS = [UNIT_HIFIGAN_NO_GRAD, UNIT_SPEECH_TOKENIZER_NO_GRAD]
 MEL_VOCODER_METHODS = [HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD, BIGVGAN_NO_GRAD, PWG_NO_GRAD]
 GENERATOR_METHODS = MEL_VOCODER_METHODS + UNIT_METHODS

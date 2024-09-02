@@ -152,9 +152,7 @@ def train_model(rank, world_size, args, avhubert_config, hifigan_config):
     dataloading_kwargs = {}
     if hifigan_config.unit_name is not None:
         dataloading_kwargs = {
-            "pitch_type":hifigan_config.prosody_type,
             "km_name":hifigan_config.unit_name,
-            "hu_name":hifigan_config.hu_repr_name,
             "st_type":hifigan_config.st_type,
             "km_pad_class_idx": hifigan_config.k,
             "generator_mode":HIFIGAN_NO_GRAD,

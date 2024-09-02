@@ -11,7 +11,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--avhubert_config", default="conf/avhubert/large_avhubert.yaml", help='replace with your config file')
     parser.add_argument("--hifigan_config", default="conf/hifigan/video2speech_template.json", help='config parts on dataset loading will not take effect in this script')
-    parser.add_argument("--pitch_type")
     parser.add_argument("--km")
     parser.add_argument("--hu_name")
     parser.add_argument("--st_type")
@@ -26,9 +25,7 @@ if __name__ == '__main__':
     for split in ["valid", "train"]:
         sets[split] = {}
         kwargs = {
-            "pitch_type":args.pitch_type,
             "km_name":args.km,
-            "hu_name":args.hu_name,
             "st_type":args.st_type,
             "with_image_tsv":True,
             "with_text": False,
@@ -52,12 +49,8 @@ if __name__ == '__main__':
             src = batch["net_input"]["source"]
             pbar.set_description(f"Now at {src['name'][0]['audio']}")
             y_mel = logmel(src["audio"])
-            if src["pitch"] is not None:
-                assert src["pitch"].shape[-1] == y_mel.shape[-1], f'{y_mel.shape[-1]=} but {src["pitch"].shape[-1]=}'
             if src["km"] is not None:
                 assert src["km"].shape[-1] == src["video"].shape[2] * 2, f'{src["video"].shape[2]=} but {src["km"].shape[-1]=}'
-            if src["hu"] is not None:
-                assert src["hu"].shape[1] == src["video"].shape[2] * 2, f'{src["video"].shape[2]=} but {src["hu"].shape[1]=}'
             if src["st"] is not None:
                 assert src["st"].shape[-1] == src["video"].shape[2] * 2, f'{src["video"].shape[2]=} but {src["st"].shape[-1]=}'
     logging.info("check successful")

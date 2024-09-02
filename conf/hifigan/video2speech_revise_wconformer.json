@@ -14,8 +14,8 @@
     "seed": 1234,
     "base_alpha_avhubert": 60,
 
-    "upsample_rates": [10,4,2,2],
-    "upsample_kernel_sizes": [20,8,4,4],
+    "upsample_rates": [10,4,4,2],
+    "upsample_kernel_sizes": [20,8,8,4],
     "upsample_initial_channel": 512,
     "resblock_kernel_sizes": [3,7,11],
     "resblock_dilation_sizes": [[1,3,5], [1,3,5], [1,3,5]],
@@ -33,12 +33,19 @@
     "fmax": 8000,
     "fmax_for_loss": null,
 
-    "save_on_metric": "mel_spec_error_generator",
-    "lower_the_better": true,
+    "unit_name":"cluster_label",
+    "valid_unit_name":"valid_cluster_label",
+    "test_unit_name":"test_cluster_label",
+    "unit_method":"HuBERT Label as input (ReVISE)",
+    "k":2000,
+    "unit_scale": 1.0,
+
+    "save_on_metric": "acc_hu_class",
+    "lower_the_better": false,
 
     "dist_config": {
         "dist_backend": "nccl",
-        "dist_url": "tcp://localhost:54322",
+        "dist_url": "tcp://localhost:55120",
         "world_size": 1
     }
 }

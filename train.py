@@ -6,11 +6,10 @@ import sys
 import warnings
 from omegaconf import OmegaConf
 from transformers import Wav2Vec2ForCTC
-import torchmetrics
 from tqdm import tqdm
 from constants import GRIFFINLIM,\
     GENERATOR_METHODS, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD, BIGVGAN_NO_GRAD, PWG_NO_GRAD,\
-    UNIT_METHODS, UNIT_SPEECH_TOKENIZER_NO_GRAD, UNIT_SOFT, \
+    UNIT_METHODS, UNIT_SPEECH_TOKENIZER_NO_GRAD, \
     VALID_MODE, TEST_MODE
 
 from contrastive.metrics import EERMetric
@@ -36,7 +35,6 @@ from dataset.meldataset import MelSpectrogramInverter,LogMelSpectrogram
 from models import AVHuBERTGenerator, MultiPeriodDiscriminator, MultiScaleDiscriminator, feature_loss, generator_loss,\
     discriminator_loss
 from utils import DataLoaderSeeder, TriStageLRScheduler, plot_spectrogram, save_wav_16khz, scan_checkpoint, load_checkpoint, save_checkpoint, seed_everything, unwrap_module_discriminator, unwrap_module_generator
-from prosody_predictor.predictor import ProsodyPredictor
 from audio.eval_utils import MetricsEvaluater, MyWav2Vec2Processor, SampleSaver
 import light_hf_proxy
 
@@ -92,19 +90,6 @@ def train(rank, a, h, avhubert_config):
             generator_mode = h.unit_method
     elif a.train_mode == VIDEO2WAV_MODE:
         generator_mode = HIFIGAN_WITH_GRAD
-    prosody_minmax_dict = None
-    if h.prosody_type is not None:
-        prosody_minmax_dict = {
-            "embedding_method":h.embedding_method,
-        }
-        if h.embedding_method != ProsodyPredictor.DIRECTMAPPING:
-            prosody_minmax_dict.update({  
-                "pitch_min":h.pitch_min,
-                "pitch_max":h.pitch_max,
-                "energy_min":h.energy_min,
-                "energy_max":h.energy_max,
-            })
-    unit_dict = None
     unit_key = None
     if h.unit_name is not None:
         speech_tokenizer_enabled = h.unit_method in [UNIT_SPEECH_TOKENIZER_NO_GRAD]
@@ -112,27 +97,9 @@ def train(rank, a, h, avhubert_config):
             unit_key = "st"
         else:
             unit_key = "km"
-        if generator_mode not in UNIT_METHODS:
-            unit_dict = {
-                "k":h.k,
-                "is_soft":h.unit_method == UNIT_SOFT,  # This term will be poped to AVHuBERTEncoder only
-                "padding":not speech_tokenizer_enabled,
-            }
-            if h.unit_method == UNIT_SOFT:
-                unit_dict.update({
-                    "hubert_hiddden":h.hubert_hidden,
-                })
-    hu_dict = None
-    if h.hu_repr_name is not None:
-        hu_dict = {
-            "hubert_hiddden":h.hubert_hidden  # 768 for hubert base
-        }
     use_farl = a.use_farl
     generator = AVHuBERTGenerator(hifigenerator_config=h,
                                   avhubert_model_config=avhubert_config["model"], 
-                                  prosody_minmax_dict=prosody_minmax_dict,
-                                  unit_dict=unit_dict,
-                                  hu_dict=hu_dict,
                                   generator_mode=generator_mode,
                                   use_farl=use_farl,
                                   ).to(device)
@@ -236,14 +203,11 @@ def train(rank, a, h, avhubert_config):
             scheduler_g = TriStageLRScheduler(optim_g, actual_total_updates, h.t1_percent, h.t2_percent, last_lr_factor=h.last_lr_factor,last_epoch=steps-1)
         if a.train_mode == VIDEO2WAV_MODE:
             scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=h.lr_decay, last_epoch=last_epoch)
-        generator_module.frontend_with_encoder.update_steps(steps, actual_total_updates)
 
     dataloading_kwargs = {}
     if h.unit_name is not None:
         dataloading_kwargs = {
-            "pitch_type":h.prosody_type,
             "km_name":h.unit_name,
-            "hu_name":h.hu_repr_name,
             "st_type":h.st_type,
             "km_pad_class_idx": h.k,
             "generator_mode":generator_mode,
@@ -347,73 +311,24 @@ def train(rank, a, h, avhubert_config):
                 y = torch.autograd.Variable(y.to(device, non_blocking=True))
                 y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
                 y = y.unsqueeze(1)
-                # keys are param names of forward func of ProsodyPredictor
-                prosody_target = {
-                    "pitch_target":None,
-                    "energy_target":None,
-                }
                 unit_target = {
                     "kmeans_target":None,
                     "kmeans_mask":None,
                 }
-                hu_target = {
-                    "hubert_representation":None,
-                    "src_key_padding_mask":None,
-                }
-                def normalize_prosody(x, m=1e-8):
-                    return (x - x.mean(dim=-1, keepdim=True))/(m+x.std(dim=-1, keepdim=True))
-                if h.prosody_type is not None:
-                    # TODO remove prosody support completely
-                    # energy_targets = y_dict["energy"].to(device)
-                    pitch_targets = avhubert_source_batch["pitch"].to(device)
-                    if h.prosody_type == 'kaldi':
-                        pitch_targets = pitch_targets[..., 0]
-                    
-                    # Norm if any
-                    if h.norm_mode == 'meanvar':
-                        energy_targets = normalize_prosody(energy_targets)
-                        if h.prosody_type != "kaldi":
-                            pitch_targets = normalize_prosody(pitch_targets)  # kaldi pitch doesn't need normalization.
-
-                    if a.real_prosody:
-                        # keys are param names of forward func of ProsodyPredictor
-                        prosody_target["energy_target"] = energy_targets
-                        prosody_target["pitch_target"] = pitch_targets
-                if h.unit_name is not None or h.hu_repr_name is not None:
+                padding_mask = ~mel_padding_mask
+                if h.unit_name is not None:
                     kmeans_mask = batch["net_input"]["padding_mask_km"].to(device)
+                    padding_mask = ~kmeans_mask
                     if h.unit_name is not None:
                         unit_target["kmeans_target"] = avhubert_source_batch[unit_key].to(device)
                         unit_target["kmeans_mask"] = ~kmeans_mask
-                    if h.hu_repr_name is not None:
-                        hu_target["hubert_representation"] = avhubert_source_batch["hu"].to(device)
-                        hu_target["src_key_padding_mask"] = kmeans_mask
 
                 generator_out = generator(
                     avhubert_source_batch["video"].to(device), 
-                    prosody_target, unit_target, hu_target, image_input, 
-                    ~mel_padding_mask)
+                    image_input,
+                    padding_mask,
+                    )
                 y_g_avhubert_mel = generator_out["melspec_out"]
-                if h.prosody_type is not None:
-                    pitch_predictions = generator_out["prosody"]["pitch_pred"]
-                    energy_predictions = generator_out["prosody"]["energy_pred"]
-                    if h.embedding_method != ProsodyPredictor.CLASSIFICATION:
-                        pitch_loss = F.mse_loss(pitch_predictions.masked_select(~mel_padding_mask), pitch_targets.masked_select(~mel_padding_mask))
-                        energy_loss = F.mse_loss(energy_predictions.masked_select(~mel_padding_mask), energy_targets.masked_select(~mel_padding_mask))
-                    else:
-                        pitch_targets = generator_out["prosody"]["pitch_class"]
-                        energy_targets = generator_out["prosody"]["energy_class"]
-                        C = pitch_predictions.shape[-1]
-                        pitch_predictions = pitch_predictions.masked_select((~mel_padding_mask).unsqueeze(-1)).reshape(-1, C)
-                        pitch_targets = pitch_targets.masked_select(~mel_padding_mask)
-                        C = energy_predictions.shape[-1]
-                        energy_predictions = energy_predictions.masked_select((~mel_padding_mask).unsqueeze(-1)).reshape(-1, C)
-                        energy_targets = energy_targets.masked_select(~mel_padding_mask)
-                        pitch_loss = F.cross_entropy(pitch_predictions, pitch_targets)
-                        energy_loss = F.cross_entropy(energy_predictions, energy_targets)
-                    if h.norm_mode == 'original':
-                        pitch_loss = h.pitch_scale*pitch_loss
-                        energy_loss = h.energy_scale*energy_loss
-                    prosody_loss = pitch_loss+energy_loss
                 if h.unit_name is not None:
                     kmeans_targets = unit_target["kmeans_target"]         
                     if h.unit_method in GENERATOR_METHODS:
@@ -425,30 +340,8 @@ def train(rank, a, h, avhubert_config):
                         unit_predictions = unit_predictions.masked_select((~kmeans_mask).unsqueeze(-1)).reshape(-1, C)
                         kmeans_targets = kmeans_targets.masked_select(~kmeans_mask)
                         unit_loss = F.cross_entropy(unit_predictions, kmeans_targets)
-                    elif h.unit_method == UNIT_SOFT:
-                        embedding_predictions = generator_out["unit"]["generated_softunit"]  # [B, T, hubert_hidden]
-                        embedding_targets = generator_out["unit"]["all_embedding"]  # [k, hubert_hidden]
-                        C = embedding_targets.shape[0]
-                        embedding_predictions = embedding_predictions.unsqueeze(0)  # [1, B, T, hubert_hidden]
-                        embedding_targets = embedding_targets.unsqueeze(1).unsqueeze(1)  # [k, 1, 1, hubert_hidden]
-                        sim_matrix = F.cosine_similarity(embedding_predictions, embedding_targets, dim=-1).softmax(dim=0)  # [k, B, T]
-                        sim_matrix = sim_matrix.permute(1, 2, 0)  # [B, T, k]
-                        sim_probs = sim_matrix.masked_select((~kmeans_mask).unsqueeze(-1)).reshape(-1, C)
-                        kmeans_targets = kmeans_targets.masked_select(~kmeans_mask)
-                        unit_loss = F.cross_entropy(sim_probs, kmeans_targets)
                         
                     unit_loss = h.unit_scale*unit_loss
-                if h.hu_repr_name is not None:
-                    rep_predictions = generator_out["hu"]["generated_rep"]
-                    rep_mask_prob = generator_out["hu"]["mask_prob"]
-                    rep_targets = hu_target["hubert_representation"]
-                    C = rep_predictions.shape[-1]
-                    rep_predictions = rep_predictions.masked_select((~kmeans_mask).unsqueeze(-1)).reshape(-1, C)
-                    rep_targets = rep_targets.masked_select((~kmeans_mask).unsqueeze(-1)).reshape(-1, C)
-                    # This is a bit different from https://arxiv.org/abs/2308.06112
-                    # As we're optimizing not just a single loss term, we will need numerical stability
-                    rep_loss = torch.sum(1-torch.nn.functional.cosine_similarity(rep_targets, rep_predictions, dim=1))
-                    rep_loss = h.hu_scale*rep_loss
                     
                 if a.train_mode == VIDEO2WAV_MODE:
                     y_g_hat = generator_out["wav_generated"]
@@ -499,12 +392,8 @@ def train(rank, a, h, avhubert_config):
                 if y_g_avhubert_mel is not None:
                     # ReVISE doesn't need this loss
                     loss_gen_all += loss_mel_avhubert
-                if h.prosody_type is not None:
-                    loss_gen_all += prosody_loss
                 if h.unit_name is not None:
                     loss_gen_all += unit_loss
-                if h.hu_repr_name is not None:
-                    loss_gen_all += rep_loss
                 loss_gen_all.backward()
                 optim_g.step()
 
@@ -537,14 +426,8 @@ def train(rank, a, h, avhubert_config):
                             log_training("mel_spec_error_generator", mel_error_generator)
                         if y_g_avhubert_mel is not None:
                             log_training("mel_spec_error_avhubert", mel_error_avhubert)
-                        if h.prosody_type is not None:
-                            log_training("pitch_loss", pitch_loss)
-                            log_training("energy_loss", energy_loss)
                         if h.unit_name is not None:
                             log_training("unit_loss", unit_loss)
-                        if h.hu_repr_name is not None:
-                            log_training("hu_cosine_loss", rep_loss)
-                            log_training("hu_mask_prob", rep_mask_prob)
                         log_training("epoch", epoch)
                         log_training("alpha_avhubert", alpha_avhubert)
 
@@ -719,29 +602,22 @@ def validate(
             wav_padding_mask = batch["net_input"]["padding_mask_wav"].to(device)
             y_mel = logmel(y)
             y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
-            prosody_target = {
-                "pitch_target":None,
-                "energy_target":None,
-            }
             unit_target = {
                 "kmeans_target":None,
                 "kmeans_mask":None,
             }
-            hu_target = {
-                "hubert_representation":None,
-                "src_key_padding_mask":None,
-            }
-            if h.unit_name is not None or h.hu_repr_name is not None:
+            padding_mask = ~mel_padding_mask
+            if h.unit_name is not None:
                 kmeans_mask = batch["net_input"]["padding_mask_km"]
+                padding_mask = None
                 if kmeans_mask is not None:
                     kmeans_mask = kmeans_mask.to(device)
-                    if h.unit_name is not None:
-                        unit_target["kmeans_mask"] = ~kmeans_mask
-                    if h.hu_repr_name is not None:
-                        hu_target["src_key_padding_mask"] = kmeans_mask
+                    unit_target["kmeans_mask"] = ~kmeans_mask
+                    padding_mask = ~kmeans_mask
             generator_out = generator(avhubert_source_batch["video"].to(device), 
-                                      prosody_target, unit_target, hu_target, image_input,
-                                      ~mel_padding_mask)
+                                      image_input,
+                                      padding_mask,
+                                      )
             y_g_avhubert_mel = generator_out["melspec_out"]
             y_g_hat = None
             y_g_hat_vc = None
@@ -763,14 +639,6 @@ def validate(
                             preds_km = generator_out["revise_logits"]
                             # preds_km = preds_km[..., :-1]  # rid of padding class idx... WON'T WORK?!
                         preds_km = preds_km.transpose(2, 1)  # (B, C, T)
-                    elif h.unit_method == UNIT_SOFT:
-                        embedding_predictions = generator_out["unit"]["generated_softunit"]  # [B, T, hubert_hidden]
-                        embedding_targets = generator_out["unit"]["all_embedding"]  # [k, hubert_hidden]
-                        C = embedding_targets.shape[0]
-                        embedding_predictions = embedding_predictions.unsqueeze(0)  # [1, B, T, hubert_hidden]
-                        embedding_targets = embedding_targets.unsqueeze(1).unsqueeze(1)  # [k, 1, 1, hubert_hidden]
-                        sim_matrix = F.cosine_similarity(embedding_predictions, embedding_targets, dim=-1).softmax(dim=0)  # [k, B, T]
-                        preds_km = sim_matrix.permute(1, 0, 2)  # [B, k, T]
                     targets_km = avhubert_source_batch[unit_key].to(device)
             text_gf, text_vc = None, None
             if y_g_hat is not None:
@@ -872,19 +740,20 @@ def test_eer(
                 "kmeans_target":None,
                 "kmeans_mask":None,
             }
-            if h.unit_name is not None or h.hu_repr_name is not None:
+            padding_mask = ~mel_padding_mask
+            if h.unit_name is not None:
                 kmeans_mask = batch["net_input"]["padding_mask_km"]
+                padding_mask = None
                 if kmeans_mask is not None:
                     kmeans_mask = kmeans_mask.to(device)
-                    if h.unit_name is not None:
-                        unit_target["kmeans_mask"] = ~kmeans_mask
+                    unit_target["kmeans_mask"] = ~kmeans_mask
+                    padding_mask = ~kmeans_mask
             image_input = batch["net_input"]["source"]["images"]
             if image_input is not None:
                 image_input = image_input.to(device)
-            waveforms = model(video, 
-                              unit_target=unit_target, 
+            waveforms = model(video,
                               farl_img_input=image_input, 
-                              mel_masks=~mel_padding_mask)["wav_generated"]  # [B*2, T']
+                              masks=padding_mask,)["wav_generated"]  # [B*2, T']
             similarity = corentinJEncoder.compute_similarity(
                 waveforms.squeeze(1),
                 ~wav_padding_mask,
@@ -908,7 +777,7 @@ def main():
     parser = argparse.ArgumentParser()
     default_ckpt_dir = 'cp_hifigan'
     parser.add_argument('--checkpoint_path', default=default_ckpt_dir)
-    parser.add_argument('--hifigan_config', default='conf/hifigan/video2speech_template.json')  # TODO: Change back in formal release
+    parser.add_argument('--hifigan_config', default='conf/hifigan/video2speech_template.json')
     parser.add_argument('--avhubert_config', default='conf/avhubert/base_avhubert_30h.yaml')
     parser.add_argument('--avhubert_ckpt', help='if specified, will load pretrained weight onto AVHuBERTModel')
     parser.add_argument('--hifigan_ckpt', help='if specified, will load pretrained weight onto HiFi-GAN in v2w mode'\
@@ -920,7 +789,6 @@ def main():
     parser.add_argument('--stdout_interval', default=5, type=int)
     parser.add_argument('--summary_interval', default=100, type=int)
     parser.add_argument('--wandb', action='store_true')
-    parser.add_argument('--predicted-prosody', action='store_true', help='(deprecated) if specified, will use predicted prosody instead of GT in training.')
     parser.add_argument('--decay_melloss', action='store_true', help='(deprecated) if specified, will decay mel loss in first 1/5 of total epochs.')
     parser.add_argument('--train_mode', choices=[VIDEO2MEL_MODE, VIDEO2WAV_MODE], default=VIDEO2MEL_MODE, help='v2w(video2wav), v2m(video2mel)')
     parser.add_argument('--test', action='store_true', help='run test only')
@@ -929,7 +797,6 @@ def main():
     parser.add_argument('--save_samples', action='store_true', help='If enabled, will save video-audio synced files in checkpointdir which is used for LSE-C/D and MOS evaluation.')
 
     a = parser.parse_args()
-    a.real_prosody = not a.predicted_prosody
     if a.save_samples or a.test_all:
         # Clearly not doing training in this case
         a.test = True
@@ -939,8 +806,6 @@ def main():
             " This should not happen in serious runs as checkpoint dir is likely overwritten with runs in default args.")
 
     h = load_hifigan_config(a.hifigan_config)
-    if h.prosody_type is not None:
-        assert h.norm_mode in ['original', 'meanvar'], f"{h.norm_mode=} which is not a valid way to normalize prosody."
     avhubert_config = load_avhubert_config(a.avhubert_config)
     if '433h_data' in avhubert_config["task"].data or '224h_data' in avhubert_config["task"].data:
         h.total_updates*=8

@@ -153,20 +153,27 @@ class Generator(torch.nn.Module):
         self.farl_model.load_state_dict(farl_state["state_dict"],strict=False)
 
 class AVHuBERT2UnitHiFiGAN(nn.Module):
-    def __init__(self, attention_dim, unit_nums) -> None:
+    def __init__(self, attention_dim, unit_nums, upsampled=False) -> None:
         super().__init__()
         self.attention_dim = attention_dim
-        # Define the transposed convolution layer
-        # Assuming the number of input channels is also 768, change it if it's different
-        self.transposed_conv = nn.ConvTranspose1d(in_channels=attention_dim*4, out_channels=unit_nums,
-                                                  kernel_size=4, stride=2, padding=1)
+        self.upsampled = upsampled
+        if upsampled:
+            self.linear_proj = nn.Linear(attention_dim, unit_nums)
+        else:
+            # Define the transposed convolution layer
+            # Assuming the number of input channels is also 768, change it if it's different
+            self.transposed_conv = nn.ConvTranspose1d(in_channels=attention_dim*4, out_channels=unit_nums,
+                                                    kernel_size=4, stride=2, padding=1)
         # Define the GeLU activation
         self.gelu = nn.GELU()
     
     def forward(self, encoder_out):
         # encoder_out is (B, T, C)
         # Apply transposed convolution
-        x = self.transposed_conv(encoder_out.transpose(-1, -2)).transpose(-1, -2)
+        if self.upsampled:
+            x = self.linear_proj(encoder_out)
+        else:
+            x = self.transposed_conv(encoder_out.transpose(-1, -2)).transpose(-1, -2)
         # Apply GeLU activation
         x = self.gelu(x)
         return x
@@ -184,12 +191,13 @@ class SpeechTokenizerGenerator(nn.Module):
         
     
 class AVHuBERTGenerator(nn.Module):
-    def __init__(self, hifigenerator_config, avhubert_model_config, prosody_minmax_dict, unit_dict, hu_dict, generator_mode:str=GRIFFINLIM, use_farl=False) -> None:
+    def __init__(self, hifigenerator_config, avhubert_model_config, generator_mode:str=GRIFFINLIM, use_farl=False) -> None:
         super().__init__()
         # Intuitively I think generating mel-spectrograms after conformer will be better regardless of generator.
         # To load runs done by previous commits, set mel_before_conformer to True.
-        self.early_return = generator_mode in UNIT_METHODS
-        self.frontend_with_encoder = AVHubertEncoder(avhubert_model_config, hifigenerator_config.num_mels, prosody_minmax_dict=prosody_minmax_dict, unit_dict=unit_dict, hu_dict=hu_dict, mel_before_conformer=False, early_return=self.early_return)
+        self.mel_mode = generator_mode not in UNIT_METHODS
+        self.with_conformer = hifigenerator_config.with_conformer
+        self.frontend_with_encoder = AVHubertEncoder(avhubert_model_config, hifigenerator_config.num_mels, mel_mode=self.mel_mode, with_conformer=self.with_conformer,)
         self.generator_mode = generator_mode
         self.with_generator = generator_mode != GRIFFINLIM
         self.with_extra_padding_unit = self.generator_mode != UNIT_SPEECH_TOKENIZER_NO_GRAD
@@ -216,15 +224,15 @@ class AVHuBERTGenerator(nn.Module):
                 )
             elif self.generator_mode == UNIT_SPEECH_TOKENIZER_NO_GRAD:
                 self.generator = SpeechTokenizerGenerator(hifigenerator_config.speechtokenizer)
-            self.unit_upsampler = AVHuBERT2UnitHiFiGAN(attention_dim, n_units)
+            self.unit_upsampler = AVHuBERT2UnitHiFiGAN(attention_dim, n_units, upsampled=self.with_conformer)
         if eval_mode_for_vocoder:
             self.generator.eval()
             for param in self.generator.parameters():
                 param.requires_grad = False
     
-    def forward(self, video, prosody_targets=None, unit_target=None, hu_target=None, farl_img_input=None, mel_masks=None):
+    def forward(self, video, farl_img_input=None, masks=None):
         avhubert_input = {"video": video, "audio": None,}
-        encoder_out = self.frontend_with_encoder(avhubert_input, prosody_targets, unit_target, hu_target, mel_masks)
+        encoder_out = self.frontend_with_encoder(avhubert_input, masks)
         downsampled_encoder_out = None
         if self.with_generator:
             if self.generator_mode in [HIFIGAN_NO_GRAD, BIGVGAN_NO_GRAD, PWG_NO_GRAD]:
@@ -246,21 +254,14 @@ class AVHuBERTGenerator(nn.Module):
         # (bs, mellen, num_mels) -> (bs, num_mels, mellen)
         ret = {
             "wav_generated":wav_generated,  # (bs, wavlen) or None if self.with_generator is False
-            "melspec_out":None,
-            "prosody": None,
-            "unit": None,
-            "hu": None,
-            "revise_logits": downsampled_encoder_out,
+            "melspec_out": None,
         }
-        if not self.early_return:
+        if self.mel_mode:
             mel_generated = encoder_out["melspec_out"]
             mel_generated = mel_generated.permute(0, 2, 1).contiguous()
-            ret.update({
-                "melspec_out":mel_generated,  # (bs, mellen, num_mels)
-                "prosody": encoder_out["prosody"],
-                "unit": encoder_out["unit"],
-                "hu": encoder_out["hu"],
-            })
+            ret["melspec_out"] = mel_generated  # (bs, mellen, num_mels)
+        else:
+            ret["revise_logits"] = downsampled_encoder_out
         return ret
     
     def load_pretrained_avhubertmodel(self, pretrained_avhubert_path:str, map_location):

@@ -3,8 +3,6 @@ import torch
 import torch.utils.data
 import numpy as np
 from librosa.filters import mel as librosa_mel_fn
-import pyworld as pw
-from scipy.interpolate import interp1d
 import torchaudio.transforms as transforms
 import torchaudio
 import torch.nn.functional as F
@@ -147,41 +145,6 @@ class MelSpectrogramInverter(torch.nn.Module):
             angles = torch.exp(1j * angles)
             y = self._istft(S_complex * angles)
         return y
-
-# TODO: pitch should be computed prior to training. It will be a speed bottleneck otherwise.
-# TODO: How about trying out for Kaldi Pitch (beta)? @ https://carolineechen.github.io/audio/main/tutorials/audio_feature_extractions_tutorial.html#kaldi-pitch-beta
-def pitch(wav_batch:torch.Tensor, wav_padding_masks:torch.Tensor, sampling_rate=16000, hop_length=160, mode=None):
-    assert mode in ['interpolate', None]
-    wav_batch = wav_batch.squeeze().cpu().numpy()
-    ret = []
-    for (wav, padding_mask) in zip(wav_batch, wav_padding_masks):
-        len_wav = sum(~padding_mask)
-        wav = wav[:len_wav]
-        wav = pitch_single(wav, mode, sampling_rate, hop_length)
-        wav = torch.FloatTensor(wav)
-        ret.append(wav)
-    ret = torch.nn.utils.rnn.pad_sequence(ret, batch_first=True)
-    return ret
-
-def pitch_single(wav, mode, sampling_rate=16000, hop_length=160):
-    # See FastSpeech 2's preprocessor.py
-    pitch, t = pw.dio(
-        wav.astype(np.float64),
-        sampling_rate,  # 16000
-        frame_period=hop_length / sampling_rate * 1000,  # 160/16000*1000=10
-    )
-    pitch = pw.stonemask(wav.astype(np.float64), pitch, t, sampling_rate)
-    if mode is not None:
-        if mode == 'interpolate':
-            nonzero_ids = np.where(pitch != 0)[0]
-            interp_fn = interp1d(
-                nonzero_ids,
-                pitch[nonzero_ids],
-                fill_value=(pitch[nonzero_ids[0]], pitch[nonzero_ids[-1]]),
-                bounds_error=False,
-            )
-            pitch = interp_fn(np.arange(0, len(pitch)))
-    return pitch
 
 def get_dataset_filelist(a):
     with open(a.input_training_file, 'r', encoding='utf-8') as fi:

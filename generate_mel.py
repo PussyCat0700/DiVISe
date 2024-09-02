@@ -3,9 +3,8 @@ import random
 import sys
 import warnings
 import numpy as np
-from omegaconf import OmegaConf
 from tqdm import tqdm
-from constants import GRIFFINLIM, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD, UNIT_HIFIGAN_NO_GRAD, UNIT_SOFT
+from constants import GRIFFINLIM, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD, UNIT_HIFIGAN_NO_GRAD
 
 from dataset import load_avhubert_config, load_dataset, get_dataloader
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -17,10 +16,9 @@ import wandb
 import torch.multiprocessing as mp
 from torch.distributed import init_process_group
 from torch.nn.parallel import DistributedDataParallel
-from env import AttrDict, build_env
+from env import AttrDict
 from models import AVHuBERTGenerator
 from utils import scan_checkpoint, load_checkpoint, seed_everything
-from prosody_predictor.predictor import ProsodyPredictor
 
 torch.backends.cudnn.benchmark = True
 logging.basicConfig(
@@ -55,39 +53,8 @@ def generate_mel(rank, a, h, avhubert_config):
             generator_mode = UNIT_HIFIGAN_NO_GRAD
     elif a.train_mode == VIDEO2WAV_MODE:
         generator_mode = HIFIGAN_WITH_GRAD
-    prosody_minmax_dict = None
-    if h.prosody_type is not None:
-        prosody_minmax_dict = {
-            "embedding_method":h.embedding_method,
-        }
-        if h.embedding_method != ProsodyPredictor.DIRECTMAPPING:
-            prosody_minmax_dict.update({  
-                "pitch_min":h.pitch_min,
-                "pitch_max":h.pitch_max,
-                "energy_min":h.energy_min,
-                "energy_max":h.energy_max,
-            })
-    unit_dict = None
-    if h.unit_name is not None:
-        if generator_mode != UNIT_HIFIGAN_NO_GRAD:
-            unit_dict = {
-                "k":h.k,
-                "is_soft":h.unit_method == UNIT_SOFT,  # This term will be poped to AVHuBERTEncoder only
-            }
-            if h.unit_method == UNIT_SOFT:
-                unit_dict.update({
-                    "hubert_hiddden":h.hubert_hidden,
-                })
-    hu_dict = None
-    if h.hu_repr_name is not None:
-        hu_dict = {
-            "hubert_hiddden":h.hubert_hidden  # 768 for hubert base
-        }
     generator = AVHuBERTGenerator(hifigenerator_config=h,
-                                  avhubert_model_config=avhubert_config["model"], 
-                                  prosody_minmax_dict=prosody_minmax_dict,
-                                  unit_dict=unit_dict,
-                                  hu_dict=hu_dict,
+                                  avhubert_model_config=avhubert_config["model"],
                                   generator_mode=generator_mode,
                                   ).to(device)
 
@@ -126,16 +93,9 @@ def generate_mel(rank, a, h, avhubert_config):
     if h.num_gpus > 1:
         generator = DistributedDataParallel(generator, device_ids=[rank], find_unused_parameters=True).to(device)
 
-    dataloading_kwargs = {}
-    if h.unit_name is not None:
-        dataloading_kwargs = {
-            "km_pad_class_idx": h.k,
-        }
-
     kwargs = {
         "fake_km_mask":True,
     }
-    kwargs.update(**dataloading_kwargs)
     avhubert_config["task"].max_sample_seconds = 10000 # Hacking: No Upper Limit
     trainset = load_dataset("train", avhubert_config["task"], **kwargs)
     validset = load_dataset("valid", avhubert_config["task"], **kwargs)
@@ -149,7 +109,6 @@ def generate_mel(rank, a, h, avhubert_config):
                                     drop_last=False,
                                     )
 
-    generator_module = generator.module if h.num_gpus > 1 else generator
     # End of a train epoch
     generator.eval()
     torch.cuda.empty_cache()
@@ -170,27 +129,7 @@ def generate_mel(rank, a, h, avhubert_config):
                     break
             if skip:
                 continue
-            prosody_target = {
-                "pitch_target":None,
-                "energy_target":None,
-            }
-            unit_target = {
-                "kmeans_target":None,
-                "kmeans_mask":None,
-            }
-            hu_target = {
-                "hubert_representation":None,
-                "src_key_padding_mask":None,
-            }
-            if h.unit_name is not None or h.hu_repr_name is not None:
-                kmeans_mask = batch["net_input"]["padding_mask_km"]
-                if kmeans_mask is not None:
-                    kmeans_mask = kmeans_mask.to(device)
-                    if h.unit_name is not None:
-                        unit_target["kmeans_mask"] = ~kmeans_mask
-                    if h.hu_repr_name is not None:
-                        hu_target["src_key_padding_mask"] = kmeans_mask
-            generator_out = generator(avhubert_source_batch["video"].to(device), prosody_target, unit_target, hu_target, ~mel_padding_mask)
+            generator_out = generator(avhubert_source_batch["video"].to(device), ~mel_padding_mask)
             y_g_avhubert_mels = generator_out["melspec_out"]
             lengths = (~mel_padding_mask).sum(dim=-1)
             y_g_avhubert_mels = y_g_avhubert_mels.transpose(1, 2).cpu().numpy()
@@ -222,26 +161,18 @@ def main():
     parser.add_argument('--stdout_interval', default=5, type=int)
     parser.add_argument('--summary_interval', default=100, type=int)
     parser.add_argument('--wandb', action='store_true')
-    parser.add_argument('--predicted-prosody', action='store_true', help='(deprecated) if specified, will use predicted prosody instead of GT in training.')
     parser.add_argument('--train_mode', choices=[VIDEO2MEL_MODE, VIDEO2WAV_MODE], default=VIDEO2MEL_MODE, help='v2w(video2wav), v2m(video2mel)')
 
     a = parser.parse_args()
-    a.real_prosody = not a.predicted_prosody
     logging.info(f'Proceeding with mode {a.train_mode}')
 
     with open(a.hifigan_config) as f:
         data = f.read()
 
     json_config = json.loads(data)
-    if 'prosody_type' not in json_config:
-        json_config['prosody_type'] = None
     if 'unit_name' not in json_config:
         json_config['unit_name'] = None
-    if 'hu_repr_name' not in json_config:
-        json_config['hu_repr_name'] = None
     h = AttrDict(json_config)
-    if h.prosody_type is not None:
-        assert h.norm_mode in ['original', 'meanvar'], f"{h.norm_mode=} which is not a valid way to normalize prosody."
     if a.train_mode == VIDEO2MEL_MODE:
         # give random port to avoid collision
         url = h.dist_config['dist_url']

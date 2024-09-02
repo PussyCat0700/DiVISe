@@ -1,12 +1,10 @@
-from omegaconf import OmegaConf
-from avhubert.avhubert import AVHubertConfig, AVHubertModel
+from avhubert.avhubert import AVHubertModel
 import torch
 import torch.nn as nn
 from dataclasses import dataclass, field
 from fairseq.dataclass.configs import FairseqDataclass
 from typing import Dict, List, Optional, Tuple
 from omegaconf import MISSING, II
-from prosody_predictor.predictor import HuBERTPredictor, HuBERTRepresentationPredictor, HuBERTSoftContentPredictor, ProsodyPredictor
 
 from pytorch_backend.transformer.encoder import ConformerEncoder
 
@@ -121,70 +119,48 @@ class AVHubertEncoder(nn.Module):
             "attention_dim":512,
         }
     }
-    def __init__(self, cfg, num_mels, prosody_minmax_dict, unit_dict, hu_dict, size="M", mel_before_conformer=False, early_return=False) -> None:
+    def __init__(self, cfg, num_mels, mel_mode:bool, with_conformer:bool, size="M") -> None:
         super().__init__()
-        self.mel_before_conformer = mel_before_conformer
-        self.early_return = early_return
+        self.mel_mode = mel_mode  # mel_mode: DiVISe when set to true in verbose mode. ReVISE when set to false with direct return.
+        self.with_conformer = with_conformer
         self.attention_dim = self.lookup_table[size]["attention_dim"]
         self.avhubert_model = AVHubertModel(cfg=cfg)
-        self.use_prosody = prosody_minmax_dict is not None
-        self.use_hubert_units = unit_dict is not None
-        self.use_hubert_representation = hu_dict is not None
-        if self.use_prosody:
-            self.prosody_predictor = ProsodyPredictor(encoder_hidden=self.attention_dim, **prosody_minmax_dict)
-        if self.use_hubert_units:
-            self.is_soft = unit_dict.pop("is_soft")
-            if self.is_soft:
-                self.unit_predictor = HuBERTSoftContentPredictor(**unit_dict)
-            else:
-                self.unit_predictor = HuBERTPredictor(**unit_dict)
-        if self.use_hubert_representation:
-            self.hu_predictor = HuBERTRepresentationPredictor(**hu_dict)
-        self.avhubert2downstream = torch.nn.Linear(cfg.encoder_embed_dim, self.attention_dim*4)
-        if not self.early_return:
+        if self.with_conformer:
             self.conformer_encoder = ConformerEncoder(size)
+        if self.mel_mode:
+            self.avhubert2downstream = torch.nn.Linear(cfg.encoder_embed_dim, self.attention_dim*4)  # ratio=4
             self.attention2mel = torch.nn.Linear(self.attention_dim, num_mels)
+        else:
+            self.avhubert2downstream = torch.nn.Linear(cfg.encoder_embed_dim, self.attention_dim*2)  # ratio=2
         
     def avhubert_grad(self, enable:bool):
         for _, param in self.avhubert_model.named_parameters():
             param.requires_grad = enable
     
-    def update_steps(self, current_step, total_steps):
-        if self.use_hubert_representation:
-            self.hu_predictor.reset_prob(current_step, total_steps)
+    def _get_output(self, vis_feature, encoder_out):
+        if self.mel_mode:
+            # DiVISe
+            # Upsampling handled in place
+            melspec_out_chunked = self.attention2mel(encoder_out)  # (bs, mellen, num_mels)
+            return {
+                "visual_feature":vis_feature,  # feature is still (bs, vidlen, 768)
+                "melspec_out":melspec_out_chunked,  # (bs, mellen, num_mels)
+                "output": encoder_out,  # (bs, mellen, attention_dim)
+                }
+        else:
+            # ReVISE
+            # could be (bs, vidlen, attention_dim*4) w/o conformer
+            # (bs, kmlen, attention_dim*2) w/ conformer
+            return encoder_out
     
-    def forward(self, source, prosody_target, unit_target, hu_target, mel_mask=None):
+    def forward(self, source, mask=None):
         # source should only include video
         encoder_out, feature, mask = self.avhubert_model.extract_finetune_with_feature(source)  # (bs, vidlen, 768)
         encoder_out = self.avhubert2downstream(encoder_out)  # (bs, vidlen, attention_dim*4)
-        if self.early_return:
-            return encoder_out
-        if self.use_hubert_units or self.use_hubert_representation:
-            encoder_out = encoder_out.reshape(*encoder_out.shape[:-2], -1, self.attention_dim*2)
-            if self.use_hubert_units:
-                unit_info = self.unit_predictor(encoder_out, **unit_target)
-                encoder_out = unit_info['output']
-            if self.use_hubert_representation:
-                hu_info = self.hu_predictor(encoder_out, **hu_target)
-                encoder_out = hu_info['output']
-        # (bs, vidlen, attention_dim*4) -> (bs, mellen=4*vidlen, attention_dim)
-        encoder_out = encoder_out.reshape(*encoder_out.shape[:-2], -1, self.attention_dim)
-        if self.use_prosody:
-            prosody_info = self.prosody_predictor(encoder_out, mel_mask, **prosody_target)
-            encoder_out = prosody_info['output']
+        if self.with_conformer:
+            # (bs, vidlen, attention_dim*ratio) -> (bs, ratio*vidlen, attention_dim)
+            encoder_out = encoder_out.reshape(*encoder_out.shape[:-2], -1, self.attention_dim)
+            encoder_out = self.conformer_encoder(encoder_out, mask)
         
-        if self.mel_before_conformer:
-            melspec_out_chunked = self.attention2mel(encoder_out)  # (bs, mellen, 80)
-        encoder_out = self.conformer_encoder(encoder_out, mel_mask)
-        if not self.mel_before_conformer:
-            melspec_out_chunked = self.attention2mel(encoder_out)  # (bs, mellen, 80)
-        
-        return {"visual_feature":feature,  # feature is still (bs, vidlen, 768)
-                "melspec_out":melspec_out_chunked,  # (bs, mellen, 80)
-                "prosody": prosody_info if self.use_prosody else None,
-                "unit": unit_info if self.use_hubert_units else None,
-                "hu": hu_info if self.use_hubert_representation else None,
-                "output": encoder_out,  # (bs, mellen, attention_dim)
-                }  
-
+        return self._get_output(feature, encoder_out)
     
