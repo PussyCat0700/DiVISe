@@ -125,13 +125,11 @@ class AVHubertEncoder(nn.Module):
         self.with_conformer = with_conformer
         self.attention_dim = self.lookup_table[size]["attention_dim"]
         self.avhubert_model = AVHubertModel(cfg=cfg)
+        self.avhubert2downstream = torch.nn.Linear(cfg.encoder_embed_dim, self.attention_dim*4)  # ratio=4
         if self.with_conformer:
             self.conformer_encoder = ConformerEncoder(size)
         if self.mel_mode:
-            self.avhubert2downstream = torch.nn.Linear(cfg.encoder_embed_dim, self.attention_dim*4)  # ratio=4
             self.attention2mel = torch.nn.Linear(self.attention_dim, num_mels)
-        else:
-            self.avhubert2downstream = torch.nn.Linear(cfg.encoder_embed_dim, self.attention_dim*2)  # ratio=2
         
     def avhubert_grad(self, enable:bool):
         for _, param in self.avhubert_model.named_parameters():
@@ -161,6 +159,9 @@ class AVHubertEncoder(nn.Module):
             # (bs, vidlen, attention_dim*ratio) -> (bs, ratio*vidlen, attention_dim)
             encoder_out = encoder_out.reshape(*encoder_out.shape[:-2], -1, self.attention_dim)
             encoder_out = self.conformer_encoder(encoder_out, mask)
+            if not self.mel_mode:
+                # ReVISE+Conformer is upsampled in unit upsampler outside.
+                encoder_out = encoder_out.reshape(*encoder_out.shape[:-2], -1, self.attention_dim*4)
         
         return self._get_output(feature, encoder_out)
     
