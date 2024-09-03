@@ -54,6 +54,12 @@ metrics = {}
 best_metrics = None
 steps = 0
 
+
+# TODO magic path is bad
+from pathlib import Path
+se_path = Path("/data1/yfliu/model/CorentinJ/encoder.pt")
+
+
 def train(rank, a, h, avhubert_config):
     global metrics, best_metrics, steps
     if rank == 0 and a.wandb:
@@ -98,10 +104,12 @@ def train(rank, a, h, avhubert_config):
         else:
             unit_key = "km"
     use_farl = a.use_farl
+    use_svts = a.svts
     generator = AVHuBERTGenerator(hifigenerator_config=h,
                                   avhubert_model_config=avhubert_config["model"], 
                                   generator_mode=generator_mode,
                                   use_farl=use_farl,
+                                  svts=use_svts,
                                   ).to(device)
     generator_module = generator
     mpd = MultiPeriodDiscriminator().to(device)
@@ -118,6 +126,8 @@ def train(rank, a, h, avhubert_config):
 
     if a.avhubert_ckpt is not None:
         generator.load_pretrained_avhubertmodel(a.avhubert_ckpt, map_location=device)
+    if use_svts:
+        generator.load_spkencoder_for_svts(se_path, device=device)
     if a.hifigan_ckpt is not None and a.train_mode == VIDEO2WAV_MODE:
         # hifigan ckpt might be updated in training with 2wav mode
         hifigan_weight = torch.load(a.hifigan_ckpt, map_location=device)
@@ -327,6 +337,7 @@ def train(rank, a, h, avhubert_config):
                     avhubert_source_batch["video"].to(device), 
                     image_input,
                     padding_mask,
+                    y,  # for svts only
                     )
                 y_g_avhubert_mel = generator_out["melspec_out"]
                 if h.unit_name is not None:
@@ -618,6 +629,7 @@ def validate(
             generator_out = generator(avhubert_source_batch["video"].to(device), 
                                       image_input,
                                       padding_mask,
+                                      y,  # for svts only
                                       )
             y_g_avhubert_mel = generator_out["melspec_out"]
             y_g_hat = None
@@ -706,8 +718,6 @@ def test_eer(
     model.eval()
     torch.cuda.empty_cache()
     # TODO magic path is bad
-    from pathlib import Path
-    se_path = Path("/data1/yfliu/model/CorentinJ/encoder.pt")
     vox2_avhubert_path = "conf/avhubert/large_avhubert_vox2all.yaml"
     pair_path = "/data1/yfliu/voxceleb2/voxceleb2_testpairs.txt"
     corentinJEncoder.load_model(se_path, device)
@@ -735,6 +745,7 @@ def test_eer(
             labels = batch[0]
             batch = batch[1]
             video = batch["net_input"]["source"]["video"].to(device)
+            audio = batch["net_input"]["source"]["audio"].to(device)
             mel_padding_mask = batch["net_input"]["padding_mask_mel"].to(device)
             wav_padding_mask = batch["net_input"]["padding_mask_wav"].to(device)
             unit_target = {
@@ -754,7 +765,9 @@ def test_eer(
                 image_input = image_input.to(device)
             waveforms = model(video,
                               farl_img_input=image_input, 
-                              masks=padding_mask,)["wav_generated"]  # [B*2, T']
+                              masks=padding_mask,
+                              audio=audio,  # for svts only
+                              )["wav_generated"]  # [B*2, T']
             similarity = corentinJEncoder.compute_similarity(
                 waveforms.squeeze(1),
                 ~wav_padding_mask,
@@ -796,6 +809,7 @@ def main():
     parser.add_argument('--test_all', action='store_true', help='equivalent to --test but with eer test which should be time consuming (Multi-GPU supported).')
     parser.add_argument('--n_ckpts', type=int, default=10, help='number of checkpoints to be saved.')
     parser.add_argument('--save_samples', action='store_true', help='If enabled, will save video-audio synced files in checkpointdir which is used for LSE-C/D and MOS evaluation.')
+    parser.add_argument('--svts', action='store_true', help='If specified, will apply SVTS as frontend encoder. avhubert_config is still needed to load dataset.')
 
     a = parser.parse_args()
     if a.save_samples or a.test_all:

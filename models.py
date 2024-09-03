@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
-from avhubert.avhubert_as_upstream import AVHubertEncoder
+from avhubert.avhubert_as_upstream import AVHubertEncoder, SVTSModel
 from vocoders.bigvgan.bigvgan_model import BigVGAN
 from constants import BIGVGAN_NO_GRAD, GRIFFINLIM, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD, PWG_NO_GRAD, UNIT_METHODS, UNIT_SPEECH_TOKENIZER_NO_GRAD, UNIT_HIFIGAN_NO_GRAD
 from speechtokenizer import SpeechTokenizer
@@ -181,13 +181,17 @@ class SpeechTokenizerGenerator(nn.Module):
         
     
 class AVHuBERTGenerator(nn.Module):
-    def __init__(self, hifigenerator_config, avhubert_model_config, generator_mode:str=GRIFFINLIM, use_farl=False) -> None:
+    def __init__(self, hifigenerator_config, avhubert_model_config, generator_mode:str=GRIFFINLIM, use_farl=False, svts=False) -> None:
         super().__init__()
         # Intuitively I think generating mel-spectrograms after conformer will be better regardless of generator.
         # To load runs done by previous commits, set mel_before_conformer to True.
         self.mel_mode = generator_mode not in UNIT_METHODS
         self.with_conformer = hifigenerator_config.with_conformer
-        self.frontend_with_encoder = AVHubertEncoder(avhubert_model_config, hifigenerator_config.num_mels, mel_mode=self.mel_mode, with_conformer=self.with_conformer,)
+        if svts:
+            # SVTS only supports Mel Vocoder, of course.
+            self.frontend_with_encoder = SVTSModel(hifigenerator_config.num_mels)
+        else:
+            self.frontend_with_encoder = AVHubertEncoder(avhubert_model_config, hifigenerator_config.num_mels, mel_mode=self.mel_mode, with_conformer=self.with_conformer,)
         self.generator_mode = generator_mode
         self.with_generator = generator_mode != GRIFFINLIM
         self.with_extra_padding_unit = self.generator_mode != UNIT_SPEECH_TOKENIZER_NO_GRAD
@@ -220,9 +224,12 @@ class AVHuBERTGenerator(nn.Module):
             for param in self.generator.parameters():
                 param.requires_grad = False
     
-    def forward(self, video, farl_img_input=None, masks=None):
+    def forward(self, video, farl_img_input=None, vid_masks=None, audio=None):
         avhubert_input = {"video": video, "audio": None,}
-        encoder_out = self.frontend_with_encoder(avhubert_input, masks)
+        if isinstance(self.frontend_with_encoder, AVHubertEncoder):
+            encoder_out = self.frontend_with_encoder(avhubert_input, vid_masks)
+        elif isinstance(self.frontend_with_encoder, SVTSModel):
+            encoder_out = self.frontend_with_encoder(video, audio)
         downsampled_encoder_out = None
         if self.with_generator:
             if self.generator_mode in [HIFIGAN_NO_GRAD, BIGVGAN_NO_GRAD, PWG_NO_GRAD]:
@@ -264,6 +271,14 @@ class AVHuBERTGenerator(nn.Module):
         incompatiblekeys = self.load_state_dict(state_dict, strict=not ignore_generator)
         if ignore_generator:
             assert all(x.startswith('generator') for x in incompatiblekeys.missing_keys) and (not incompatiblekeys.unexpected_keys), f"When loading model, got {incompatiblekeys=}"
+    
+    def load_spkencoder_for_svts(self, corentinj_se_path, device):
+        speaker_encoder = self.frontend_with_encoder.conformer_backbone.encoder.speaker_encoder
+        speaker_weight = torch.load(corentinj_se_path, map_location=device)['model_state']
+        speaker_encoder.device = device
+        speaker_encoder.load_state_dict(speaker_weight)
+        speaker_encoder.eval()
+
 
 class DiscriminatorP(torch.nn.Module):
     def __init__(self, period, kernel_size=5, stride=3, use_spectral_norm=False):

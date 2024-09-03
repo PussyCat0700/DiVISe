@@ -6,7 +6,11 @@
 
 """Encoder definition."""
 
+import numpy as np
 import torch
+
+from speaker_encoder.model import SpeakerEncoder
+from speaker_encoder.inference import wav_to_mel_spectrogram
 
 from .nets_utils import rename_state_dict
 #from espnet.nets.pytorch_backend.transducer.vgg import VGG2L
@@ -103,15 +107,33 @@ class Encoder(torch.nn.Module):
         padding_idx=-1,
         relu_type="prelu",
         a_upsample_ratio=1,
+        use_speaker_encoder=False,
+        frontend_enabled=False,
     ):
         """Construct an Encoder object."""
         super(Encoder, self).__init__()
         self._register_load_state_dict_pre_hook(_pre_hook)
+        self.use_speaker_encoder = use_speaker_encoder
+        self.frontend_enabled = frontend_enabled
 
         if encoder_attn_layer_type == "rel_mha":
             pos_enc_class = RelPositionalEncoding
         elif encoder_attn_layer_type == "legacy_rel_mha":
             pos_enc_class = LegacyRelPositionalEncoding
+        # -- frontend module
+        self.frontend = None
+        if self.frontend_enabled:
+            if input_layer == "conv1d":
+                self.frontend = Conv1dResNet(
+                    relu_type=relu_type,
+                    a_upsample_ratio=a_upsample_ratio,
+                )
+            elif input_layer == "conv3d":
+                self.frontend = Conv3dResNet(relu_type=relu_type)
+        if self.use_speaker_encoder:
+            self.speaker_encoder = SpeakerEncoder(torch.device("cpu"), torch.device("cpu"))
+            for _, param in self.speaker_encoder.named_parameters():
+                param.requires_grad = False
         # -- backend module.
         if input_layer == "linear":
             self.embed = torch.nn.Sequential(
@@ -138,8 +160,9 @@ class Encoder(torch.nn.Module):
                 input_layer, pos_enc_class(attention_dim, positional_dropout_rate),
             )
         elif input_layer in ["conv1d", "conv3d"]:
+            proj_dim_before = 768 if use_speaker_encoder else 512
             self.embed = torch.nn.Sequential(
-                torch.nn.Linear(512, attention_dim),
+                torch.nn.Linear(proj_dim_before, attention_dim),
                 pos_enc_class(attention_dim, positional_dropout_rate)
             )
         elif input_layer is None:
@@ -215,20 +238,33 @@ class Encoder(torch.nn.Module):
         if self.normalize_before:
             self.after_norm = LayerNorm(attention_dim)
 
-    def forward(self, xs, masks=None):
+    def forward(self, xs, masks=None, xa=None):
         """Encode input sequence.
 
         :param torch.Tensor xs: input tensor
         :param torch.Tensor masks: input mask
+        :param torch.Tensor xa: wavform from the same speaker
         :param str extract_features: the position for feature extraction
         :return: position embedded tensor and mask
         :rtype Tuple[torch.Tensor, torch.Tensor]:
         """
+        if isinstance(self.frontend, (Conv1dResNet, Conv3dResNet)):
+            y_frontend = self.frontend(xs)
+            if self.use_speaker_encoder:
+                with torch.no_grad():
+                    frames = [wav_to_mel_spectrogram(wav.cpu().numpy()) for wav in xa.squeeze(1)]
+                    frames = torch.from_numpy(np.array(frames)).to(self.speaker_encoder.device)
+                    y_speaker = self.speaker_encoder.forward(frames)  # (B, spencode_dim)
+                    y_speaker = y_speaker.unsqueeze(-2)  # (B, 1, spencode_dim)
+                    y_speaker = y_speaker.repeat_interleave(y_frontend.shape[-2], dim=-2)  # (B, T, spencode_dim)
+                xs = torch.cat((y_frontend, y_speaker), dim=-1)
+            else:
+                xs = y_frontend
         if isinstance(self.embed, Conv2dSubsampling):
             xs, masks = self.embed(xs, masks)
         else:
             xs = self.embed(xs)
-        
+
         xs, masks = self.encoders(xs, masks)
 
         if isinstance(xs, tuple):
@@ -254,21 +290,27 @@ class ConformerEncoder(torch.nn.Module):
                 "attention_heads":4,
             },
             "L":{
-                "num_blocks":6,
+                "num_blocks":12,
                 "attention_dim":512,
                 "attention_heads":8,
-            }
+            },  # only L follows original setting of SVTS
         }
         return lookup_table[size]
-    def __init__(self, size) -> None:
+    def __init__(self, size, use_speaker_encoder=False) -> None:
         super().__init__()
         kwargs = self.lookup(size)
         print(f'conformer encoder, details={kwargs}')
+        input_layer = None
+        frontend_enabled = use_speaker_encoder
+        if frontend_enabled:
+            input_layer = 'conv3d'
         self.encoder = Encoder(macaron_style=True,
                                use_cnn_module=True,
-                               input_layer=None,
+                               input_layer=input_layer,
+                               use_speaker_encoder=use_speaker_encoder,
+                               frontend_enabled=frontend_enabled,
                                **kwargs,)
     
-    def forward(self, xs, masks):
-        x, mask = self.encoder(xs, masks)  # (bs, inlen, attention_dim)
+    def forward(self, xs, masks=None, xa=None):
+        x, mask = self.encoder(xs, masks, xa)  # (bs, inlen, attention_dim)
         return x
