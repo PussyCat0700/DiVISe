@@ -559,7 +559,8 @@ def validate(
     generator.eval()
     logmel = LogMelSpectrogram().to(device)
     err_tot = {"mel_spec_error_avhubert": 0}
-    with_classification = h.unit_name is not None
+    # See why this is not allowed in distributed mode at https://github.com/Lightning-AI/torchmetrics/issues/626
+    calc_classfication_metrics = h.unit_name is not None and h.num_gpus <= 1
     num_classes = None
     torch.cuda.empty_cache()
     if mode == VALID_MODE:
@@ -573,7 +574,7 @@ def validate(
     f_vc = open(os.path.join(a.checkpoint_path, f'{generated_prefix}_vc.txt'), 'w+')   
     if tmpdir is not None:
         samplesaver = SampleSaver(tmpdir)
-    if with_classification:
+    if calc_classfication_metrics:
         num_classes = h.k
         if generator.with_extra_padding_unit:
             num_classes += 1
