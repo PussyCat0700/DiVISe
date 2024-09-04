@@ -106,7 +106,14 @@ class AVHubertPretrainingConfig(FairseqDataclass):
     noise_num: int = field(default=1, metadata={'help': 'number of noise wav files to mix'})
     fine_tuning: bool = field(default=False, metadata={"help": "set to true if fine-tuning AV-Hubert"})
 
-class AVHubertEncoder(nn.Module):
+
+class FrontendWithEncoder(nn.Module):
+    # Interface
+    def avhubert_grad(self, enable:bool):
+        pass
+
+
+class AVHubertEncoder(FrontendWithEncoder):
     # should be consistent with conformer's setting.
     lookup_table = {
         "S":{
@@ -143,7 +150,7 @@ class AVHubertEncoder(nn.Module):
             return {
                 "visual_feature":vis_feature,  # feature is still (bs, vidlen, 768)
                 "melspec_out":melspec_out_chunked,  # (bs, mellen, num_mels)
-                "output": encoder_out,  # (bs, mellen, attention_dim)
+                "output": encoder_out,  # (bs, vidlen, attention_dim)
                 }
         else:
             # ReVISE
@@ -164,4 +171,45 @@ class AVHubertEncoder(nn.Module):
                 encoder_out = encoder_out.reshape(*encoder_out.shape[:-2], -1, self.attention_dim*4)
         
         return self._get_output(feature, encoder_out)
-    
+
+
+class SVTSModel(FrontendWithEncoder):
+
+    def __init__(self, target_mel_dim, size="L", group_norm=False):
+        super().__init__()
+
+        # encoder can use batch or group-norm
+        # decoder has a combination of layer (encoder layers) and batch-norm (conv module)
+        # self.encoder = Encoder()
+        self.target_mel_dim = target_mel_dim
+        self.conformer_backbone = ConformerEncoder(size, use_speaker_encoder=True)
+        self.attention_dim = self.conformer_backbone.lookup(size)["attention_dim"]
+
+        # PROJECTION LAYER
+        self.projection_layer = torch.nn.Linear(
+            in_features=self.attention_dim,
+            out_features=4*self.target_mel_dim,
+        )
+
+        if group_norm:
+            # recursive function to convert batch-norm layers to group-norm for gradient accumulation training
+            def convert_bn_layer(module):
+                for name, l in module.named_children():
+                    if any([isinstance(l, x) for x in [torch.nn.BatchNorm1d, torch.nn.BatchNorm2d, torch.nn.BatchNorm3d]]):
+                        setattr(module, name, torch.nn.GroupNorm(32, num_channels=l.num_features))
+                    if len(list(l.children())) > 0:
+                        convert_bn_layer(l)
+            convert_bn_layer(self)
+
+
+    def forward(self, speaker_vid, speaker_wav, max_sample_seconds=4):
+        speaker_wav = speaker_wav[..., :max_sample_seconds*16000]
+        encoded = self.conformer_backbone(speaker_vid, xa=speaker_wav)  # (N, Lin, attn_dim)
+        encoded = self.projection_layer(encoded)  # (N, Lin, 4*self.target_mel_dim)
+
+        # reshape x
+        melspec_out_chunked = encoded.reshape(*encoded.shape[:-2], -1, self.target_mel_dim)  # (N, 4*Lin, self.target_mel_dim)
+        return {
+            "melspec_out": melspec_out_chunked,  # (bs, mellen, num_mels)
+            "output": encoded,  # (bs, vidlen, attention_dim)
+        }
