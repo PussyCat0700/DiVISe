@@ -149,6 +149,7 @@ def train(rank, a, h, avhubert_config):
             steps = state_dict_do['steps'] + 1
             last_epoch = state_dict_do['epoch']
             best_metrics = state_dict_do['metrics']
+            metrics = best_metrics
     elif a.train_mode == VIDEO2MEL_MODE:
         if cp_g is None:
             state_dict_g = None
@@ -163,6 +164,7 @@ def train(rank, a, h, avhubert_config):
             steps = state_dict_g['steps'] + 1
             last_epoch = state_dict_g['epoch']
             best_metrics = state_dict_g['metrics']
+            metrics = best_metrics
     if a.hifigan_ckpt is not None:
         # hifigan ckpt is not supposed to be updated in training with 2mel mode
         hifigan_weight = torch.load(a.hifigan_ckpt, map_location=device)
@@ -502,8 +504,8 @@ def train(rank, a, h, avhubert_config):
                                 else:
                                     logging.warning(f'{filepath_to_remove} does not exist and removing is cancelled.')
                     save_all_checkpoints(steps, remove_title=steps-part_updates if steps-part_updates>0 else None)
-                    if (h.lower_the_better and metrics[h.save_on_metric] <= best_metrics[h.save_on_metric]) \
-                        or (not h.lower_the_better and metrics[h.save_on_metric] >= best_metrics[h.save_on_metric]):
+                    if (h.lower_the_better and metrics[h.save_on_metric] < best_metrics[h.save_on_metric]) \
+                        or (not h.lower_the_better and metrics[h.save_on_metric] > best_metrics[h.save_on_metric]):
                         save_all_checkpoints("best")
                         best_metrics = metrics
                 if steps == actual_total_updates:
