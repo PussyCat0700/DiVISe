@@ -559,8 +559,7 @@ def validate(
     generator.eval()
     logmel = LogMelSpectrogram().to(device)
     err_tot = {"mel_spec_error_avhubert": 0}
-    # See why this is not allowed in distributed mode at https://github.com/Lightning-AI/torchmetrics/issues/626
-    calc_classfication_metrics = h.unit_name is not None and h.num_gpus <= 1
+    calc_classfication_metrics = h.unit_name is not None
     num_classes = None
     torch.cuda.empty_cache()
     if mode == VALID_MODE:

@@ -196,10 +196,12 @@ class MetricsEvaluater:
         self.err_tot["algorithmic"] = set()
         if self.num_classes:
             task, average = "multiclass", "macro"
-            self.acc = torchmetrics.Accuracy(task=task, num_classes=num_classes, average=average).to(device)
-            self.recall = torchmetrics.Recall(task=task, num_classes=num_classes, average=average).to(device)
-            self.precision = torchmetrics.Precision(task=task, num_classes=num_classes, average=average).to(device)
-            self.auc = torchmetrics.AUROC(task=task, num_classes=num_classes, average=average).to(device)
+            # Unless you want to test with dataset loaded for ddp, don't remove sync_on_compute=False.
+            # https://github.com/Lightning-AI/torchmetrics/pull/339
+            self.acc = torchmetrics.Accuracy(task=task, num_classes=num_classes, average=average, sync_on_compute=False).to(device)
+            self.recall = torchmetrics.Recall(task=task, num_classes=num_classes, average=average, sync_on_compute=False).to(device)
+            self.precision = torchmetrics.Precision(task=task, num_classes=num_classes, average=average, sync_on_compute=False).to(device)
+            self.auc = torchmetrics.AUROC(task=task, num_classes=num_classes, average=average, sync_on_compute=False).to(device)
             self.err_tot['algorithmic'].add(self.unit_acc_name)
             self.err_tot['algorithmic'].add(self.unit_recall_name)
             self.err_tot['algorithmic'].add(self.unit_precision_name)
