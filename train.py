@@ -766,7 +766,7 @@ def test_eer(
                 image_input = image_input.to(device)
             waveforms = model(video,
                               farl_img_input=image_input, 
-                              masks=padding_mask,
+                              vid_masks=padding_mask,
                               audio=audio,  # for svts only
                               )["wav_generated"]  # [B*2, T']
             similarity = corentinJEncoder.compute_similarity(
