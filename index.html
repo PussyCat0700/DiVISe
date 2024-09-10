@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Speech Synthesis Project</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .row {
+            display: flex;
+            gap: 20px;
+        }
+        .column {
+            flex: 1;
+            text-align: center;
+        }
+        .column video {
+            width: 100%;
+            max-width: 320px;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Video recovery examples from LRS3-TED dataset</h1>
+    <p>LRS3-TED contains examples from TED talks of various speakers. The following samples are drawn from V2S models trained on LRS3-TED.</p>
+
+    <div class="container">
+        <!-- First Row -->
+        <div class="row">
+            <div class="column">
+                <p>Input video (silent)</p>
+                <video controls>
+					<source src="static/videos/7gXq1ml6B1E_00001/silent.mp4" type="video/mp4">
+                </video>
+            </div>
+            <div class="column">
+                <p>Ref. video</p>
+                <video controls>
+					<source src="static/videos/7gXq1ml6B1E_00001/gt.mp4" type="video/mp4">
+                </video>
+            </div>
+            <div class="column">
+                <p>ReVISE</p>
+                <video controls>
+					<source src="static/videos/7gXq1ml6B1E_00001/revise_vc.mp4" type="video/mp4">
+                </video>
+            </div>
+            <div class="column">
+                <p>DiVISe</p>
+                <video controls>
+					<source src="static/videos/7gXq1ml6B1E_00001/divise_vc.mp4" type="video/mp4">
+                </video>
+            </div>
+        </div>
+
+        <!-- Additional Rows -->
+
+        <div class="row">
+            <div class="column">
+                <p>Input video (silent)</p>
+                <video controls>
+					<source src="static/videos/7kkRkhAXZGg_00003/silent.mp4" type="video/mp4">
+                </video>
+            </div>
+            <div class="column">
+                <p>Ref. video</p>
+                <video controls>
+					<source src="static/videos/7kkRkhAXZGg_00003/gt.mp4" type="video/mp4">
+                </video>
+            </div>
+            <div class="column">
+                <p>ReVISE</p>
+                <video controls>
+					<source src="static/videos/7kkRkhAXZGg_00003/revise_vc.mp4" type="video/mp4">
+                </video>
+            </div>
+            <div class="column">
+                <p>DiVISe</p>
+                <video controls>
+					<source src="static/videos/7kkRkhAXZGg_00003/divise_vc.mp4" type="video/mp4">
+                </video>
+            </div>
+        </div>
+
+        <!-- Repeat for more rows -->
+
+        <div class="row">
+            <div class="column">
+                <p>Input video (silent)</p>
+                <video controls>
+					<source src="static/videos/7uN4I1wEOXE_00001/silent.mp4" type="video/mp4">
+                </video>
+            </div>
+            <div class="column">
+                <p>Ref. video</p>
+                <video controls>
+					<source src="static/videos/7uN4I1wEOXE_00001/gt.mp4" type="video/mp4">
+                </video>
+            </div>
+            <div class="column">
+                <p>ReVISE</p>
+                <video controls>
+					<source src="static/videos/7uN4I1wEOXE_00001/revise_vc.mp4" type="video/mp4">
+                </video>
+            </div>
+            <div class="column">
+                <p>DiVISe</p>
+                <video controls>
+					<source src="static/videos/7uN4I1wEOXE_00001/divise_vc.mp4" type="video/mp4">
+                </video>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="column">
+                <p>Input video (silent)</p>
+                <video controls>
+					<source src="static/videos/9RMx31GnNXY_00001/silent.mp4" type="video/mp4">
+                </video>
+            </div>
+            <div class="column">
+                <p>Ref. video</p>
+                <video controls>
+					<source src="static/videos/9RMx31GnNXY_00001/gt.mp4" type="video/mp4">
+                </video>
+            </div>
+            <div class="column">
+                <p>ReVISE</p>
+                <video controls>
+					<source src="static/videos/9RMx31GnNXY_00001/revise_vc.mp4" type="video/mp4">
+                </video>
+            </div>
+            <div class="column">
+                <p>DiVISe</p>
+                <video controls>
+					<source src="static/videos/9RMx31GnNXY_00001/divise_vc.mp4" type="video/mp4">
+                </video>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
