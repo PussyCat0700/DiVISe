@@ -2,8 +2,8 @@
 Currently, this script supports:
 1. Unit Vocoder Training
 2. Unit Vocoder w/ FaRL embedding Training
+4. LRS3 Training
 3. LRS3 Evaluation and VoxCeleb2 EER evaluation for both unit vocoders and mel vocoder
-This script does not support mel vocoder training and one may find scripts for mel vocoder in 16khifigan repo (LRS3 training requires finetune mode).
 """
 import argparse
 from datetime import timedelta
@@ -24,7 +24,7 @@ from tqdm import tqdm
 import wandb
 from audio.eval_utils import MetricsEvaluater, MyWav2Vec2Processor, SampleSaver
 from transformers import Wav2Vec2ForCTC
-from constants import HIFIGAN_NO_GRAD, TEST_MODE, UNIT_HIFIGAN_NO_GRAD, VALID_MODE
+from constants import HIFIGAN_NO_GRAD, HYBRID_MEL_UNIT_NO_GRAD, MEL_VOCODER_METHODS, TEST_MODE, UNIT_HIFIGAN_NO_GRAD, UNIT_METHODS, VALID_MODE
 
 from contrastive.metrics import EERMetric
 import speaker_encoder.inference as corentinJEncoder
@@ -58,16 +58,35 @@ BETAS = (0.8, 0.99)
 LEARNING_RATE_DECAY = 0.999
 WEIGHT_DECAY = 1e-5
 LOG_INTERVAL = 5
-VALIDATION_INTERVAL = 1000
+VALIDATION_INTERVAL = 5000
 NUM_GENERATED_EXAMPLES = 10
 CHECKPOINT_INTERVAL = 5000
+
+
+def prep_wav(avhubert_source_batch, tgts, generator_mode, use_farl, rank):
+    source_inputs = None
+    source_inputs_units = None
+    source_inputs_mel = tgts.squeeze(1).transpose(-1, -2)
+    if generator_mode in UNIT_METHODS:
+        source_inputs = source_inputs_units = avhubert_source_batch["km"].to(rank)
+    elif generator_mode in MEL_VOCODER_METHODS:
+        source_inputs = source_inputs_mel
+    if generator_mode == HYBRID_MEL_UNIT_NO_GRAD:
+        source_inputs = {
+            "unit": source_inputs_units,
+            "mel": source_inputs_mel,
+        }
+    image_inputs = None
+    if use_farl:
+        image_inputs = avhubert_source_batch["images"].to(rank)
+    return source_inputs, image_inputs
 
 
 def train_model(rank, world_size, args, avhubert_config, hifigan_config):
     device = torch.device(f'cuda:{rank}')
     use_farl = args.farl_ckpt is not None
     logmel = LogMelSpectrogram().to(rank)
-    generator_mode = UNIT_HIFIGAN_NO_GRAD if hifigan_config.unit_name is not None else HIFIGAN_NO_GRAD
+    generator_mode = hifigan_config.unit_method if hifigan_config.unit_name is not None else HIFIGAN_NO_GRAD
     if hifigan_config.num_gpus > 1:
         dist.init_process_group(
             backend=hifigan_config.dist_config['dist_backend'],
@@ -101,7 +120,7 @@ def train_model(rank, world_size, args, avhubert_config, hifigan_config):
     writer = SummaryWriter(log_dir) if rank == 0 else None
 
     generator = HifiganGenerator(hifigan_config, hifigan_config.num_mels,
-                                    unit_nums=hifigan_config.k if generator_mode == UNIT_HIFIGAN_NO_GRAD else None,
+                                    unit_nums=hifigan_config.k if generator_mode in UNIT_METHODS else None,
                                     use_farl=use_farl,
                                     ).to(rank)
     discriminator = HifiganDiscriminator().to(rank)
@@ -149,19 +168,20 @@ def train_model(rank, world_size, args, avhubert_config, hifigan_config):
         generator = DDP(generator, device_ids=[rank])
         discriminator = DDP(discriminator, device_ids=[rank])
 
-    dataloading_kwargs = {}
+    dataloading_kwargs = {
+        "with_image_tsv": use_farl,
+        "generator_mode":HIFIGAN_NO_GRAD,
+    }
     if hifigan_config.unit_name is not None:
-        dataloading_kwargs = {
+        dataloading_kwargs.update({
             "km_name":hifigan_config.unit_name,
             "st_type":hifigan_config.st_type,
             "km_pad_class_idx": hifigan_config.k,
-            "generator_mode":HIFIGAN_NO_GRAD,
-            "with_image_tsv": use_farl,
-        }
+        })
     trainset = load_dataset("train", avhubert_config["task"], **dataloading_kwargs)
     train_loader, train_sampler = get_dataloader(trainset, 
                                                 batch_size=hifigan_config.batch_size,
-                                                num_workers=hifigan_config.num_gpus, 
+                                                num_workers=2, 
                                                 dist_sampler=hifigan_config.num_gpus > 1,
                                                 pin_memory=not hifigan_config.num_gpus > 1,
                                                 shuffle=True,
@@ -253,18 +273,21 @@ def train_model(rank, world_size, args, avhubert_config, hifigan_config):
         pbar = tqdm(train_loader)
         for i, batch in enumerate(pbar, 1):
             avhubert_source_batch = batch["net_input"]["source"]
-            wavs = avhubert_source_batch["audio"].to(rank)
-            wavs = wavs.unsqueeze(1)
+            wavs = avhubert_source_batch["audio"].to(rank)  # [B, num_mels, T]
+            wavs = wavs.unsqueeze(1)  # [B, 1, num_mels, T] to suit discriminator
             tgts = logmel(wavs)
-            units = avhubert_source_batch["km"].to(rank)
-            image_inputs = None
-            if use_farl:
-                image_inputs = avhubert_source_batch["images"].to(rank)
+            source_inputs, image_inputs = prep_wav(
+                avhubert_source_batch,
+                tgts,
+                generator_mode,
+                use_farl,
+                rank,
+            )
 
             # Discriminator
             optimizer_discriminator.zero_grad()
 
-            wavs_ = generator(units, image_inputs)
+            wavs_ = generator(source_inputs, image_inputs)
             mels_ = logmel(wavs_)
             scores, _ = discriminator(wavs)
             scores_, _ = discriminator(wavs_.detach())
@@ -406,19 +429,19 @@ def validate(
     for j, batch in enumerate(pbar, 1):
         avhubert_source_batch = batch["net_input"]["source"]
         wavs = avhubert_source_batch["audio"].to(rank)
+        wavs = wavs.unsqueeze(1)  # [B, 1, num_mels, T] to suit loss
         wav_padding_mask = batch["net_input"]["padding_mask_wav"].to(rank)
         gt_texts = [x.strip() for x in batch["target"]]
-        wavs = wavs.unsqueeze(1)
         tgts = logmel(wavs)  # [B, 1, num_mels, T]
-        image_inputs = None
-        if use_farl:
-            image_inputs = avhubert_source_batch["images"].to(rank)
         with torch.inference_mode():
-            if generator_mode == UNIT_HIFIGAN_NO_GRAD:
-                units = avhubert_source_batch["km"].to(rank)
-                wavs_ = generator(units, image_inputs)
-            elif generator_mode == HIFIGAN_NO_GRAD:
-                wavs_ = generator(tgts.squeeze(1).transpose(-1, -2))
+            source_inputs, image_inputs = prep_wav(
+                avhubert_source_batch,
+                tgts,
+                generator_mode,
+                use_farl,
+                rank,
+            )
+            wavs_ = generator(source_inputs, image_inputs)
             mels_ = logmel(wavs_)
 
             length = min(mels_.size(-1), tgts.size(-1))
@@ -493,13 +516,12 @@ def test_eer(
         "permute": False,
         "with_image_tsv": True,
     }
-    if generator_mode == UNIT_HIFIGAN_NO_GRAD:
+    if generator_mode in UNIT_METHODS:
         kwargs.update({
             "km_name": h.test_unit_name,
             "km_pad_class_idx": h.k,
         })
-    elif generator_mode == HIFIGAN_NO_GRAD:
-        logmel = LogMelSpectrogram().to(device)
+    logmel = LogMelSpectrogram().to(device)
     testset = load_dataset_eer(**kwargs)
     test_loader, _ = get_dataloader(testset, 
                                     batch_size=4,
@@ -513,16 +535,19 @@ def test_eer(
             batch = batch[1]
             wav_padding_mask = batch["net_input"]["padding_mask_wav"].to(device)
             avhubert_source_batch = batch["net_input"]["source"]
+            wavs = avhubert_source_batch["audio"].to(device)
+            tgts = logmel(wavs)  # [B*2, num_mels, T]
             image_input = avhubert_source_batch["images"].to(device)
             if image_input is not None:
                 image_input = image_input.to(device)
-            if generator_mode == UNIT_HIFIGAN_NO_GRAD:
-                units = avhubert_source_batch["km"].to(device)
-                waveforms = model(units, image_input)  # [B*2, T']
-            elif generator_mode == HIFIGAN_NO_GRAD:
-                wavs = avhubert_source_batch["audio"].to(device)
-                tgts = logmel(wavs)  # [B*2, num_mels, T]
-                waveforms = model(tgts.transpose(-1, -2))  # [B*2, T']
+            source_inputs, image_inputs = prep_wav(
+                avhubert_source_batch,
+                tgts,
+                generator_mode,
+                True,
+                device,
+            )
+            waveforms = model(source_inputs, image_inputs)  # [B*2, T']
             similarity = corentinJEncoder.compute_similarity(
                 waveforms.squeeze(1),
                 ~wav_padding_mask,
@@ -589,6 +614,12 @@ if __name__ == "__main__":
         action='store_true',
         help='If enabled, will save video-audio synced files in checkpointdir which is used for LSE-C/D and MOS evaluation.'
     )
+    parser.add_argument(
+        '--max_updates',
+        help='max number of updates per GPU',
+        type=int,
+        default=120_000,
+    )
     args = parser.parse_args()
     if args.save_samples or args.test_all:
         # Clearly not doing training in this case
@@ -607,7 +638,7 @@ if __name__ == "__main__":
     logger.handlers.clear()
 
     world_size = torch.cuda.device_count()
-    max_updates_allowed = 400_000 * world_size
+    max_updates_allowed = args.max_updates
     avhubert_config = load_avhubert_config(args.avhubert_config)
     avhubert_config["task"].max_sample_seconds = SEGMENT_LENGTH / SAMPLE_RATE
     hifigan_config = load_hifigan_config(args.hifigan_config)

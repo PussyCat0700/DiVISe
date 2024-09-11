@@ -6,7 +6,7 @@ from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
 from avhubert.avhubert_as_upstream import AVHubertEncoder, SVTSModel
 from vocoders.bigvgan.bigvgan_model import BigVGAN
-from constants import BIGVGAN_NO_GRAD, GRIFFINLIM, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD, PWG_NO_GRAD, UNIT_METHODS, UNIT_SPEECH_TOKENIZER_NO_GRAD, UNIT_HIFIGAN_NO_GRAD
+from constants import BIGVGAN_NO_GRAD, GRIFFINLIM, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD, HYBRID_MEL_UNIT_NO_GRAD, PWG_NO_GRAD, UNIT_METHODS, UNIT_SPEECH_TOKENIZER_NO_GRAD, UNIT_HIFIGAN_NO_GRAD
 from speechtokenizer import SpeechTokenizer
 from utils import init_weights, get_padding, mpd_length_variators, msd_length_variators
 
@@ -83,14 +83,26 @@ class Generator(torch.nn.Module):
         self.h = h
         self.num_kernels = len(h.resblock_kernel_sizes)
         self.num_upsamples = len(h.upsample_rates)
-        self.mode = UNIT_HIFIGAN_NO_GRAD if unit_nums is not None else None
+        self.mode = HIFIGAN_NO_GRAD
+        if unit_nums is not None:
+            self.mode = h.unit_method
         self.use_farl = use_farl
+        conv_pre_dim = conv_indim
         # initial upsampling layers
-        if self.mode == UNIT_HIFIGAN_NO_GRAD:
+        if self.mode in UNIT_METHODS:
             # lookup table as in https://arxiv.org/abs/2104.00355
             # The extra embedding to the end is used for padding in dataset collating.
             self.lut = nn.Embedding(unit_nums+1, conv_indim)
-        self.conv_pre = weight_norm(Conv1d(conv_indim, h.upsample_initial_channel, 7, 1, padding=3))
+        if self.mode == HYBRID_MEL_UNIT_NO_GRAD:
+            self.initup = nn.ConvTranspose1d(
+                in_channels=conv_indim,
+                out_channels=conv_indim,
+                kernel_size=4,
+                stride=2,
+                padding=1,
+            )
+            conv_pre_dim = conv_indim * 2
+        self.conv_pre = weight_norm(Conv1d(conv_pre_dim, h.upsample_initial_channel, 7, 1, padding=3))
         if self.use_farl:
             self.farl_model, _ = clip.load("ViT-B/16")
             for param in self.farl_model.parameters():
@@ -114,10 +126,17 @@ class Generator(torch.nn.Module):
         self.ups.apply(init_weights)
         self.conv_post.apply(init_weights)
 
-    def forward(self, x, img_input=None):
-        if self.mode == UNIT_HIFIGAN_NO_GRAD:
-            x = self.lut(x)
-        x = x.transpose(-1, -2).contiguous()
+    def forward(self, source_input, img_input=None):
+        if self.mode == HIFIGAN_NO_GRAD:
+            x = source_input.transpose(-1, -2).contiguous()
+        elif self.mode == UNIT_HIFIGAN_NO_GRAD:
+            x = self.lut(source_input).transpose(-1, -2).contiguous()
+        elif self.mode == HYBRID_MEL_UNIT_NO_GRAD:
+            x = self.lut(source_input['unit']).transpose(-1, -2).contiguous()
+            x = self.initup(x)
+            mel = source_input['mel'].transpose(-1, -2).contiguous()
+            x = torch.cat([x, mel], dim=1)
+
         x = self.conv_pre(x)
         if self.use_farl:
             farl_embedding = self.farl_model.encode_image(img_input).float().unsqueeze(-1)  # [B, C, 1]
@@ -246,6 +265,7 @@ class AVHuBERTGenerator(nn.Module):
                         wav_generated = self.generator(indices, farl_img_input)
                     elif self.generator_mode == UNIT_SPEECH_TOKENIZER_NO_GRAD:
                         wav_generated = self.generator(indices.unsqueeze(0), st=0).squeeze(0)
+            # TODO add support for Hybrid mode
         else:
             wav_generated = None
         # (bs, mellen, num_mels) -> (bs, num_mels, mellen)
