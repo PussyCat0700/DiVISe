@@ -16,6 +16,7 @@ def extract_first_frame(video_path, output_path):
 
 
 def process_videos_walkdir(base_dir, output_base):
+    os.makedirs(output_base, exist_ok=True)
     for root, dirs, files in os.walk(base_dir):
         for file in files:
             if file.endswith('.mp4'):
@@ -57,11 +58,10 @@ def save_tsv(tsvin_dir, outputbase_dir, tsvout_dir):
     writer.close()
 
 
-def tsv_way(split):
+def tsv_way(inbasedir, outputbase_dir, split):
     print(f'doing {split}')
-    tsvindir = f"/data1/yfliu/lrs3/433h_data/{split}.tsv"
-    tsvoutdir = f"/data1/yfliu/lrs3/433h_data/frame_{split}.tsv"
-    outputbase_dir = "/data1/yfliu/lrs3/frames"
+    tsvindir = f"{inbasedir}/{split}.tsv"
+    tsvoutdir = f"{inbasedir}/frame_{split}.tsv"
     save_tsv(tsvindir, outputbase_dir, tsvoutdir)
     print(f"{split} finished")
 
@@ -70,9 +70,16 @@ if __name__ == '__main__':
     def make_lrs3_tsv():
         for split in ['trainval', 'test', 'short-pretrain']:
             process_videos_walkdir(f'/data1/yfliu/lrs3/{split}', f'/data1/yfliu/lrs3/frames/{split}')
-        tsv_way("train")
-        tsv_way("valid")
-        tsv_way("test")
+        tsv_way("/data1/yfliu/lrs3/433h_data", "/data1/yfliu/lrs3/frames", "train")
+        tsv_way("/data1/yfliu/lrs3/433h_data", "/data1/yfliu/lrs3/frames", "valid")
+        tsv_way("/data1/yfliu/lrs3/433h_data", "/data1/yfliu/lrs3/frames", "test")
+        
+    def make_lrs2_tsv():
+        for split in ['main', 'short-pretrain']:
+            process_videos_walkdir(f'/data1/yfliu/lrs2ondisk/mvlrs_v1/{split}', f'/data1/yfliu/lrs2ondisk/mvlrs_v1/frames/{split}')
+        tsv_way("/data1/yfliu/lrs2ondisk/mvlrs_v1/224h_data", "/data1/yfliu/lrs2ondisk/mvlrs_v1/frames", "train")
+        tsv_way("/data1/yfliu/lrs2ondisk/mvlrs_v1/224h_data", "/data1/yfliu/lrs2ondisk/mvlrs_v1/frames", "valid")
+        tsv_way("/data1/yfliu/lrs2ondisk/mvlrs_v1/224h_data", "/data1/yfliu/lrs2ondisk/mvlrs_v1/frames", "test")
     
     def make_vox2_tsv():
         tsv_indir = '/data1/yfliu/voxceleb2/all_data/test.tsv'
@@ -80,4 +87,4 @@ if __name__ == '__main__':
         output_tsv = '/data1/yfliu/voxceleb2/all_data/frame_test.tsv'
         save_tsv(tsv_indir, outputbase_dir, output_tsv)
 
-    make_vox2_tsv()
+    make_lrs2_tsv()
