@@ -125,8 +125,8 @@ class Generator(torch.nn.Module):
         self.conv_post = weight_norm(Conv1d(ch, 1, 7, 1, padding=3))
         self.ups.apply(init_weights)
         self.conv_post.apply(init_weights)
-
-    def forward(self, source_input, img_input=None):
+    
+    def extract_unit_embedding(self, source_input, img_input):
         if self.mode == HIFIGAN_NO_GRAD:
             x = source_input.transpose(-1, -2).contiguous()
         elif self.mode == UNIT_HIFIGAN_NO_GRAD:
@@ -141,6 +141,10 @@ class Generator(torch.nn.Module):
         if self.use_farl:
             farl_embedding = self.farl_model.encode_image(img_input).float().unsqueeze(-1)  # [B, C, 1]
             x = x + farl_embedding  # [B, C, T]
+        return x
+
+    def forward(self, source_input, img_input=None):
+        x = self.extract_unit_embedding(source_input, img_input)
         for i in range(self.num_upsamples):
             x = F.leaky_relu(x, LRELU_SLOPE)
             x = self.ups[i](x)
@@ -487,3 +491,11 @@ def generator_loss(disc_outputs, wav_mask=None, loss_type:str=None):
 
     return loss, gen_losses
 
+class EmbeddingClassifier(nn.Module):
+    def __init__(self, input_size, num_classes):
+        super().__init__()
+        self.fc = nn.Linear(input_size, num_classes)
+
+    def forward(self, embedding):
+        pooled = embedding.mean(dim=-1)  # [B, C, T] -> [B, C]
+        return self.fc(pooled)

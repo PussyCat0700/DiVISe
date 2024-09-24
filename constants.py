@@ -18,3 +18,6 @@ CONTRAST_METHODS = [SIMCLR, MOCO,]
 # Evaluation Modes
 TEST_MODE = "test"
 VALID_MODE = "validation"
+# Emotion Tasks
+CLASSIFICATION_TASK_EMOTION = 'emotion'
+CLASSIFICATION_TASK_GENDER = 'gender'

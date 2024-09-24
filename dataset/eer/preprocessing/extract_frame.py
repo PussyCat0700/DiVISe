@@ -3,6 +3,27 @@ import subprocess
 from tqdm import tqdm
 
 
+# Function to get the total number of frames using ffprobe
+def get_total_frames(video_path):
+    command = [
+        'ffprobe', '-v', 'error', '-count_frames', '-select_streams', 'v:0', 
+        '-show_entries', 'stream=nb_read_frames', '-of', 'default=nokey=1:noprint_wrappers=1', video_path
+    ]
+    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    return int(result.stdout.decode().strip())
+
+# Function to extract the middle frame using ffmpeg
+def extract_middle_frame(video_path, output_path):
+    total_frames = get_total_frames(video_path)
+    middle_frame = total_frames // 2  # Get the middle frame index
+    # Construct ffmpeg command to extract the middle frame
+    command = [
+        'ffmpeg', '-i', video_path, '-vf', f'select=eq(n\\,{middle_frame})', '-frames:v', '1', '-q:v', '3',
+        output_path, '-y'
+    ]
+    # It is recommended that you check stdout and err before you direct them to NULL like I do now
+    subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+
 def extract_first_frame(video_path, output_path):
     if not os.path.exists(os.path.dirname(output_path)):
         os.makedirs(os.path.dirname(output_path))
@@ -11,11 +32,11 @@ def extract_first_frame(video_path, output_path):
         'ffmpeg', '-i', video_path, '-vf', 'select=eq(n\,0)', '-q:v', '3', 
         output_path, '-y'
     ]
-    # It is recommended that you check stdout and err before you direct them to NULL like I do
+    # It is recommended that you check stdout and err before you direct them to NULL like I do now
     subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 
 
-def process_videos_walkdir(base_dir, output_base):
+def process_videos_walkdir(base_dir, output_base, func=extract_first_frame):
     os.makedirs(output_base, exist_ok=True)
     for root, dirs, files in os.walk(base_dir):
         for file in files:
@@ -23,8 +44,9 @@ def process_videos_walkdir(base_dir, output_base):
                 video_path = os.path.join(root, file)
                 relative_path = os.path.relpath(root, base_dir)
                 output_dir = os.path.join(output_base, relative_path)
+                os.makedirs(output_dir, exist_ok=True)
                 output_file = os.path.join(output_dir, file.replace('.mp4', '.jpg'))
-                extract_first_frame(video_path, output_file)
+                func(video_path, output_file)
                 
 
 def walkdir_way():
@@ -69,7 +91,7 @@ def tsv_way(inbasedir, outputbase_dir, split):
 if __name__ == '__main__':
     def make_lrs3_tsv():
         for split in ['trainval', 'test', 'short-pretrain']:
-            process_videos_walkdir(f'/data1/yfliu/lrs3/{split}', f'/data1/yfliu/lrs3/frames/{split}')
+            process_videos_walkdir(f'/data1/yfliu/lrs3/{split}', f'/data1/yfliu/lrs3/frames/{split}', func=extract_middle_frame)
         tsv_way("/data1/yfliu/lrs3/433h_data", "/data1/yfliu/lrs3/frames", "train")
         tsv_way("/data1/yfliu/lrs3/433h_data", "/data1/yfliu/lrs3/frames", "valid")
         tsv_way("/data1/yfliu/lrs3/433h_data", "/data1/yfliu/lrs3/frames", "test")
@@ -86,5 +108,9 @@ if __name__ == '__main__':
         outputbase_dir = "/data1/yfliu/voxceleb2/frames"
         output_tsv = '/data1/yfliu/voxceleb2/all_data/frame_test.tsv'
         save_tsv(tsv_indir, outputbase_dir, output_tsv)
+    
+    def make_ravdess_tsv():
+        outputbase_dir = "/data1/yfliu/ravdess/frames"
+        process_videos_walkdir('/data1/yfliu/ravdess', outputbase_dir, func=extract_middle_frame)
 
-    make_lrs2_tsv()
+    make_lrs3_tsv()

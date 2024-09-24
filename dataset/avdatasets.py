@@ -19,7 +19,9 @@ import torch
 from fairseq.data.fairseq_dataset import FairseqDataset
 from torch.utils.data import Dataset
 from scipy.io import wavfile
+from constants import CLASSIFICATION_TASK_EMOTION, CLASSIFICATION_TASK_GENDER
 from dataset.meldataset import load_wav
+from emotion.ravdess.ravdess_paths import TEST_HUBERT_TSV, TEST_TSV, TRAIN_HUBERT_TSV, TRAIN_TSV, VALID_HUBERT_TSV, VALID_TSV
 
 DBG=True
 
@@ -802,3 +804,87 @@ class ContrastiveDataset(Dataset):
             "utt_id": [s['fid'] for s in samples]
         }
         return batch
+
+class EmotionDataset(Dataset):
+    def __init__(self, task, split, km_pad_class):
+        super().__init__()
+        if split == 'train':
+            self.tsv_path = TRAIN_TSV
+            self.units_path = TRAIN_HUBERT_TSV
+        elif split == 'valid':
+            self.tsv_path = VALID_TSV
+            self.units_path = VALID_HUBERT_TSV
+        elif split == 'test':
+            self.tsv_path = TEST_TSV
+            self.units_path = TEST_HUBERT_TSV
+        self.data, inds, tot, images = self._load_tsv()
+        self.km_labels = load_km_labels(self.units_path, inds, tot)
+        self.farl_dataset = FaRLTSVDataset(images)
+        self.task = task
+        self.km_pad_class = km_pad_class
+
+    def _load_tsv(self):
+        data = []
+        inds = []
+        images = []
+        with open(self.tsv_path, 'r') as f:
+            for ind, line in enumerate(f.readlines()):
+                fields = line.strip().split('\t')
+                if len(fields) == 8:  # Ensure the line is properly formatted
+                    frame_path, emotion, intensity, statement, actor, gender, wav_path, wav_len = fields
+                    data.append({
+                        'frame_path': frame_path,
+                        'emotion': int(emotion),
+                        'intensity': int(intensity),
+                        'statement': int(statement),
+                        'actor': int(actor),
+                        'gender': int(gender),
+                        'wav_path': wav_path,
+                        'wav_len': int(wav_len)
+                    })
+                    images.append(' \t'+frame_path)  # evil trick for compatibility
+                    inds.append(ind)
+        tot = ind + 1
+
+        return data, inds, tot, images
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        # Get metadata for this sample
+        sample_data = self.data[idx]
+        
+        # load km_labels and frames
+        km_label = [int(x) for x in self.km_labels[idx].strip().split(' ')]  # 50 Hz
+        frame = self.farl_dataset[idx]
+
+        # Prepare the labels
+        label = {
+            'emotion': sample_data['emotion'],
+            'intensity': sample_data['intensity'],
+            'statement': sample_data['statement'],
+            'actor': sample_data['actor'],
+            'gender': sample_data['gender'],
+        }
+        if self.task == CLASSIFICATION_TASK_EMOTION:
+            label = label['emotion']
+        elif self.task == CLASSIFICATION_TASK_GENDER:
+            label = label['gender']
+        km_label = torch.LongTensor(km_label)
+        label = torch.LongTensor([label-1,])  # index starts from 0.
+        return frame, km_label, label
+
+    def collate_fn(self, batch):
+        frames = default_collate([x[0] for x in batch])
+        km_labels = torch.nn.utils.rnn.pad_sequence(
+            [x[1] for x in batch],
+            batch_first=True,
+            padding_value=self.km_pad_class,
+            )
+        labels = default_collate([x[2] for x in batch])
+        return {
+            'frames': frames,
+            'units': km_labels,
+            'labels': labels,
+        }
