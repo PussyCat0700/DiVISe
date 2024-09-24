@@ -119,7 +119,9 @@ def compute_audio_metrics_numpy(degs:np.array, refs:np.array, rate:int):
                 ret = _compute_audio_metrics(deg, ref, rate)
                 rets.append(ret)
             except NoUtterancesError as e:
-                logging.warn('skipping one sample because no utterance was detected.')
+                logging.warning('skipping one sample because no utterance was detected.')
+            except Exception as e:
+                logging.warning(f'got {e=}')
         return rets
     else:
         return _compute_audio_metrics(degs, refs, rate)
@@ -253,7 +255,7 @@ class MetricsEvaluater:
                 ret[key] = term
         return rets
         
-    def eval_metrics(self, g_hat, y, wav_padding_mask, gt_texts, preds_km=None, targets_km=None):      
+    def eval_metrics(self, g_hat, y, wav_padding_mask, gt_texts=None, preds_km=None, targets_km=None):      
         with torch.inference_mode():  
             # model definition can be found in https://pytorch.org/audio/stable/_modules/torchaudio/models/wav2vec2/model.html
             if len(g_hat.shape) > 2:
@@ -261,15 +263,17 @@ class MetricsEvaluater:
             if len(y.shape) > 2:
                 y = y.squeeze(1)
             assert g_hat.dim()==2 and y.dim()==2 and wav_padding_mask.dim()==2
-            generated_texts = self.map_to_pred(g_hat, wav_padding_mask)  # length indicates the valid length in time axis of emissions
             hypoes = []
-            for generated_text, gt_text in zip(generated_texts, gt_texts):
-                generated_text = generated_text.lower().strip()
-                hypo, ref = generated_text.strip().split(), gt_text.strip().split()
-                self.n_err += editdistance.eval(hypo, ref)
-                self.n_total += len(ref)
-                hypoes.append(' '.join(hypo))
-            self.err_tot[self.wer_name] = self.n_err / self.n_total
+            self.err_tot[self.wer_name] = 0
+            if gt_texts is not None:
+                generated_texts = self.map_to_pred(g_hat, wav_padding_mask)  # length indicates the valid length in time axis of emissions
+                for generated_text, gt_text in zip(generated_texts, gt_texts):
+                    generated_text = generated_text.lower().strip()
+                    hypo, ref = generated_text.strip().split(), gt_text.strip().split()
+                    self.n_err += editdistance.eval(hypo, ref)
+                    self.n_total += len(ref)
+                    hypoes.append(' '.join(hypo))
+                self.err_tot[self.wer_name] = self.n_err / self.n_total
             if self.num_classes:
                 self.acc.update(preds_km, targets_km)
                 self.recall.update(preds_km, targets_km)

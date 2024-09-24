@@ -87,6 +87,7 @@ def train_model(rank, world_size, args, avhubert_config, hifigan_config):
     use_farl = args.farl_ckpt is not None
     logmel = LogMelSpectrogram().to(rank)
     generator_mode = hifigan_config.unit_method if hifigan_config.unit_name is not None else HIFIGAN_NO_GRAD
+    with_text = 'vox' not in avhubert_config["task"].data
     if hifigan_config.num_gpus > 1:
         dist.init_process_group(
             backend=hifigan_config.dist_config['dist_backend'],
@@ -178,37 +179,12 @@ def train_model(rank, world_size, args, avhubert_config, hifigan_config):
             "st_type":hifigan_config.st_type,
             "km_pad_class_idx": hifigan_config.k,
         })
-    trainset = load_dataset("train", avhubert_config["task"], **dataloading_kwargs)
-    train_loader, train_sampler = get_dataloader(trainset, 
-                                                batch_size=hifigan_config.batch_size,
-                                                num_workers=2, 
-                                                dist_sampler=hifigan_config.num_gpus > 1,
-                                                pin_memory=not hifigan_config.num_gpus > 1,
-                                                shuffle=True,
-                                                seeder=DataLoaderSeeder(hifigan_config.seed),
-                                                )
-    kwargs = {
-        "st_type": hifigan_config.st_type
-    }
-    if rank == 0:
-        if hifigan_config.unit_name is not None and hifigan_config.valid_unit_name is not None:
-            # You can apply trained kmeans model on valid set to get km labels just for reference.
-            kwargs.update({
-                "km_name":hifigan_config.valid_unit_name,
-                })
-        else:
-            kwargs.update({
-                "fake_km_mask":True,
-            })
-        dataloading_kwargs.update(**kwargs)
-        validset = load_dataset("valid", avhubert_config["task"], **dataloading_kwargs)
-        validation_loader, _ = get_dataloader(validset, 
-                                            batch_size=hifigan_config.batch_size,
-                                            num_workers=1, 
-                                            drop_last=False,
-                                            shuffle=False)
 
     if args.test:
+        kwargs = {
+            "st_type": hifigan_config.st_type,
+            "with_text": with_text,
+        }
         logger.info("will only perform test")
         if hifigan_config.unit_name is not None and hifigan_config.test_unit_name is not None:
             # You can apply trained kmeans model on valid set to get km labels just for reference.
@@ -242,6 +218,7 @@ def train_model(rank, world_size, args, avhubert_config, hifigan_config):
                 generator_mode,
                 writer,
                 tmpdir=tmpdir,
+                with_text=with_text,
             )
         if args.test_all:
             test_eer(
@@ -253,6 +230,37 @@ def train_model(rank, world_size, args, avhubert_config, hifigan_config):
                 sw=writer
             )
         exit(0)
+    
+    trainset = load_dataset("train", avhubert_config["task"], **dataloading_kwargs)
+    train_loader, train_sampler = get_dataloader(trainset, 
+                                                batch_size=hifigan_config.batch_size,
+                                                num_workers=2, 
+                                                dist_sampler=hifigan_config.num_gpus > 1,
+                                                pin_memory=not hifigan_config.num_gpus > 1,
+                                                shuffle=True,
+                                                seeder=DataLoaderSeeder(hifigan_config.seed),
+                                                )
+    kwargs = {
+        "st_type": hifigan_config.st_type,
+        "with_text": with_text,
+    }
+    if rank == 0:
+        if hifigan_config.unit_name is not None and hifigan_config.valid_unit_name is not None:
+            # You can apply trained kmeans model on valid set to get km labels just for reference.
+            kwargs.update({
+                "km_name":hifigan_config.valid_unit_name,
+                })
+        else:
+            kwargs.update({
+                "fake_km_mask":True,
+            })
+        dataloading_kwargs.update(**kwargs)
+        validset = load_dataset("valid", avhubert_config["task"], **dataloading_kwargs)
+        validation_loader, _ = get_dataloader(validset, 
+                                            batch_size=hifigan_config.batch_size,
+                                            num_workers=1, 
+                                            drop_last=False,
+                                            shuffle=False)
     n_epochs = math.ceil(args.max_updates/(len(train_loader)*world_size))
     start_epoch = global_step // len(train_loader) + 1
 
@@ -349,6 +357,7 @@ def train_model(rank, world_size, args, avhubert_config, hifigan_config):
                     VALID_MODE,
                     generator_mode,
                     writer,
+                    with_text=with_text,
                 )                
 
                 generator.train()
@@ -403,6 +412,7 @@ def validate(
     generator_mode,
     writer=None,
     tmpdir=None,
+    with_text=True,
 ):
     # Only allows rank 0
     if rank != 0:
@@ -416,8 +426,10 @@ def validate(
         generated_prefix = f"generated_test"
     if tmpdir is not None:
         samplesaver = SampleSaver(tmpdir)
-    w2v_model = Wav2Vec2ForCTC.from_pretrained("facebook/wav2vec2-large-960h-lv60-self").to(rank)
-    w2v_processor = MyWav2Vec2Processor.from_pretrained("facebook/wav2vec2-large-960h-lv60-self")
+    w2v_model = w2v_processor = None
+    if with_text:
+        w2v_model = Wav2Vec2ForCTC.from_pretrained("facebook/wav2vec2-large-960h-lv60-self").to(rank)
+        w2v_processor = MyWav2Vec2Processor.from_pretrained("facebook/wav2vec2-large-960h-lv60-self")
     audioeval = MetricsEvaluater(
         w2v_processor=w2v_processor, 
         w2v_model=w2v_model,
@@ -431,7 +443,9 @@ def validate(
         wavs = avhubert_source_batch["audio"].to(rank)
         wavs = wavs.unsqueeze(1)  # [B, 1, num_mels, T] to suit loss
         wav_padding_mask = batch["net_input"]["padding_mask_wav"].to(rank)
-        gt_texts = [x.strip() for x in batch["target"]]
+        gt_texts = None
+        if with_text:
+            gt_texts = [x.strip() for x in batch["target"]]
         tgts = logmel(wavs)  # [B, 1, num_mels, T]
         with torch.inference_mode():
             source_inputs, image_inputs = prep_wav(
@@ -461,16 +475,17 @@ def validate(
             pbar_desc = f'current wer={audioeval.err_tot["wer"]}'
         pbar.set_description(pbar_desc)
         if j <= NUM_GENERATED_EXAMPLES:
-            writer.add_text(
-                f'real/text',
-                gt_texts[0],
-                global_step,
-            )
-            writer.add_text(
-                f'generated/text',
-                text_transcribed[0],
-                global_step,
-            )
+            if with_text:
+                writer.add_text(
+                    f'real/text',
+                    gt_texts[0],
+                    global_step,
+                )
+                writer.add_text(
+                    f'generated/text',
+                    text_transcribed[0],
+                    global_step,
+                )
             save_wav_16khz(os.path.join(writer.get_logdir(), f'{gt_prefix}_y_{j}.wav'), wavs.squeeze()[0])
             save_wav_16khz(os.path.join(writer.get_logdir(), f'{generated_prefix}_y_hat_vocoder_{j}.wav'), wavs_.squeeze()[0])
             writer.add_figure(
@@ -478,7 +493,8 @@ def validate(
                 plot_spectrogram(mels_.squeeze()[0].cpu().numpy()),
                 global_step,
             )
-    del w2v_model, w2v_processor
+    if with_text:
+        del w2v_model, w2v_processor
     for err_key, err_term in audioeval.err_tot.items():
         if err_key == 'algorithmic':
             continue
