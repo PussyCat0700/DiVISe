@@ -154,18 +154,17 @@ class AVHubertEncoder(FrontendWithEncoder):
                 }
         else:
             # ReVISE
-            # could be (bs, vidlen, attention_dim*4) w/o conformer
-            # (bs, kmlen, attention_dim*2) w/ conformer
-            return encoder_out
+            # Upsamping handled by transpose conv outside
+            return encoder_out  # (bs, vidlen, attention_dim*4)
     
-    def forward(self, source, mask=None):
+    def forward(self, source, mel_mask=None):
         # source should only include video
         encoder_out, feature, mask = self.avhubert_model.extract_finetune_with_feature(source)  # (bs, vidlen, 768)
         encoder_out = self.avhubert2downstream(encoder_out)  # (bs, vidlen, attention_dim*4)
         if self.with_conformer:
-            # (bs, vidlen, attention_dim*ratio) -> (bs, ratio*vidlen, attention_dim)
+            # (bs, vidlen, attention_dim*4) -> (bs, 4*vidlen, attention_dim)
             encoder_out = encoder_out.reshape(*encoder_out.shape[:-2], -1, self.attention_dim)
-            encoder_out = self.conformer_encoder(encoder_out, mask)
+            encoder_out = self.conformer_encoder(encoder_out, mel_mask)
             if not self.mel_mode:
                 # ReVISE+Conformer is upsampled in unit upsampler outside.
                 encoder_out = encoder_out.reshape(*encoder_out.shape[:-2], -1, self.attention_dim*4)

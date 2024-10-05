@@ -171,6 +171,7 @@ def train_model(rank, world_size, args, avhubert_config, hifigan_config):
 
     dataloading_kwargs = {
         "with_image_tsv": use_farl,
+        "with_text": with_text,
         "generator_mode":HIFIGAN_NO_GRAD,
     }
     if hifigan_config.unit_name is not None:
@@ -183,7 +184,6 @@ def train_model(rank, world_size, args, avhubert_config, hifigan_config):
     if args.test:
         kwargs = {
             "st_type": hifigan_config.st_type,
-            "with_text": with_text,
         }
         logger.info("will only perform test")
         if hifigan_config.unit_name is not None and hifigan_config.test_unit_name is not None:
@@ -242,7 +242,6 @@ def train_model(rank, world_size, args, avhubert_config, hifigan_config):
                                                 )
     kwargs = {
         "st_type": hifigan_config.st_type,
-        "with_text": with_text,
     }
     if rank == 0:
         if hifigan_config.unit_name is not None and hifigan_config.valid_unit_name is not None:
@@ -398,8 +397,6 @@ def train_model(rank, world_size, args, avhubert_config, hifigan_config):
         logger.info(
             f"train -- epoch: {epoch}, mel loss: {average_loss_mel:.4f}, generator loss: {average_loss_generator:.4f}, discriminator loss: {average_loss_discriminator:.4f}"
         )
-
-    dist.destroy_process_group()
 
 
 def validate(

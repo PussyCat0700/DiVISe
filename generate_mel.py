@@ -32,6 +32,11 @@ logging.getLogger(__name__)
 VIDEO2MEL_MODE = "v2m"
 VIDEO2WAV_MODE = "v2w"
 
+# TODO magic path is bad
+from pathlib import Path
+se_path = Path("/data1/yfliu/model/CorentinJ/encoder.pt")
+
+
 def generate_mel(rank, a, h, avhubert_config):
     if rank == 0 and a.wandb:
         full_path = os.path.abspath(a.checkpoint_path)
@@ -56,6 +61,7 @@ def generate_mel(rank, a, h, avhubert_config):
     generator = AVHuBERTGenerator(hifigenerator_config=h,
                                   avhubert_model_config=avhubert_config["model"],
                                   generator_mode=generator_mode,
+                                  svts=a.svts,
                                   ).to(device)
 
     if rank == 0:
@@ -68,6 +74,8 @@ def generate_mel(rank, a, h, avhubert_config):
 
     if a.avhubert_ckpt is not None:
         generator.load_pretrained_avhubertmodel(a.avhubert_ckpt, map_location=device)
+    if a.svts:
+        generator.load_spkencoder_for_svts(se_path, device=device)
     if a.hifigan_ckpt is not None:
         hifigan_weight = torch.load(a.hifigan_ckpt, map_location=device)
         def unwrap_module_generator(weight, ignore_conv_pre:bool):
@@ -129,7 +137,12 @@ def generate_mel(rank, a, h, avhubert_config):
                     break
             if skip:
                 continue
-            generator_out = generator(avhubert_source_batch["video"].to(device), ~mel_padding_mask)
+            generator_out = generator(
+                    avhubert_source_batch["video"].to(device), 
+                    None,
+                    ~mel_padding_mask,
+                    avhubert_source_batch["audio"].to(device),  # for svts only
+                    )
             y_g_avhubert_mels = generator_out["melspec_out"]
             lengths = (~mel_padding_mask).sum(dim=-1)
             y_g_avhubert_mels = y_g_avhubert_mels.transpose(1, 2).cpu().numpy()
@@ -161,6 +174,7 @@ def main():
     parser.add_argument('--stdout_interval', default=5, type=int)
     parser.add_argument('--summary_interval', default=100, type=int)
     parser.add_argument('--wandb', action='store_true')
+    parser.add_argument('--svts', action='store_true')
     parser.add_argument('--train_mode', choices=[VIDEO2MEL_MODE, VIDEO2WAV_MODE], default=VIDEO2MEL_MODE, help='v2w(video2wav), v2m(video2mel)')
 
     a = parser.parse_args()

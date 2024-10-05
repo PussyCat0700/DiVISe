@@ -247,10 +247,10 @@ class AVHuBERTGenerator(nn.Module):
             for param in self.generator.parameters():
                 param.requires_grad = False
     
-    def forward(self, video, farl_img_input=None, vid_masks=None, audio=None):
+    def forward(self, video, farl_img_input=None, mel_masks=None, audio=None):
         avhubert_input = {"video": video, "audio": None,}
         if isinstance(self.frontend_with_encoder, AVHubertEncoder):
-            encoder_out = self.frontend_with_encoder(avhubert_input, vid_masks)
+            encoder_out = self.frontend_with_encoder(avhubert_input, mel_masks)
         elif isinstance(self.frontend_with_encoder, SVTSModel):
             encoder_out = self.frontend_with_encoder(video, audio)
         downsampled_encoder_out = None

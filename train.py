@@ -321,27 +321,17 @@ def train(rank, a, h, avhubert_config):
                 y = torch.autograd.Variable(y.to(device, non_blocking=True))
                 y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
                 y = y.unsqueeze(1)
-                unit_target = {
-                    "kmeans_target":None,
-                    "kmeans_mask":None,
-                }
-                padding_mask = ~mel_padding_mask
-                if h.unit_name is not None:
-                    kmeans_mask = batch["net_input"]["padding_mask_km"].to(device)
-                    padding_mask = ~kmeans_mask
-                    if h.unit_name is not None:
-                        unit_target["kmeans_target"] = avhubert_source_batch[unit_key].to(device)
-                        unit_target["kmeans_mask"] = ~kmeans_mask
 
                 generator_out = generator(
                     avhubert_source_batch["video"].to(device), 
                     image_input,
-                    padding_mask,
+                    ~mel_padding_mask,
                     y,  # for svts only
                     )
                 y_g_avhubert_mel = generator_out["melspec_out"]
                 if h.unit_name is not None:
-                    kmeans_targets = unit_target["kmeans_target"]         
+                    kmeans_targets = avhubert_source_batch[unit_key].to(device)
+                    kmeans_mask = batch["net_input"]["padding_mask_km"].to(device)
                     if h.unit_method in GENERATOR_METHODS:
                         if h.unit_method == HIFIGAN_NO_GRAD:
                             unit_predictions = generator_out["unit"]["kmeans_pred"]
@@ -613,21 +603,9 @@ def validate(
             wav_padding_mask = batch["net_input"]["padding_mask_wav"].to(device)
             y_mel = logmel(y)
             y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
-            unit_target = {
-                "kmeans_target":None,
-                "kmeans_mask":None,
-            }
-            padding_mask = ~mel_padding_mask
-            if h.unit_name is not None:
-                kmeans_mask = batch["net_input"]["padding_mask_km"]
-                padding_mask = None
-                if kmeans_mask is not None:
-                    kmeans_mask = kmeans_mask.to(device)
-                    unit_target["kmeans_mask"] = ~kmeans_mask
-                    padding_mask = ~kmeans_mask
             generator_out = generator(avhubert_source_batch["video"].to(device), 
                                       image_input,
-                                      padding_mask,
+                                      ~mel_padding_mask,
                                       y,  # for svts only
                                       )
             y_g_avhubert_mel = generator_out["melspec_out"]
@@ -747,24 +725,12 @@ def test_eer(
             audio = batch["net_input"]["source"]["audio"].to(device)
             mel_padding_mask = batch["net_input"]["padding_mask_mel"].to(device)
             wav_padding_mask = batch["net_input"]["padding_mask_wav"].to(device)
-            unit_target = {
-                "kmeans_target":None,
-                "kmeans_mask":None,
-            }
-            padding_mask = ~mel_padding_mask
-            if h.unit_name is not None:
-                kmeans_mask = batch["net_input"]["padding_mask_km"]
-                padding_mask = None
-                if kmeans_mask is not None:
-                    kmeans_mask = kmeans_mask.to(device)
-                    unit_target["kmeans_mask"] = ~kmeans_mask
-                    padding_mask = ~kmeans_mask
             image_input = batch["net_input"]["source"]["images"]
             if image_input is not None:
                 image_input = image_input.to(device)
             waveforms = model(video,
                               farl_img_input=image_input, 
-                              vid_masks=padding_mask,
+                              mel_masks=~mel_padding_mask,
                               audio=audio,  # for svts only
                               )["wav_generated"]  # [B*2, T']
             similarity = corentinJEncoder.compute_similarity(
