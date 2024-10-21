@@ -33,8 +33,8 @@ from torch.nn.parallel import DistributedDataParallel
 from env import AttrDict, build_env
 from dataset.meldataset import MelSpectrogramInverter,LogMelSpectrogram
 from models import AVHuBERTGenerator, MultiPeriodDiscriminator, MultiScaleDiscriminator, feature_loss, generator_loss,\
-    discriminator_loss
-from utils import DataLoaderSeeder, TriStageLRScheduler, plot_spectrogram, save_wav_16khz, scan_checkpoint, load_checkpoint, save_checkpoint, seed_everything, unwrap_module_discriminator, unwrap_module_generator
+    discriminator_loss, spectral_convergence_loss
+from utils import DataLoaderSeeder, TriStageLRScheduler, WarmupCosineScheduler, plot_spectrogram, save_wav_16khz, scan_checkpoint, load_checkpoint, save_checkpoint, seed_everything, unwrap_module_discriminator, unwrap_module_generator
 from audio.eval_utils import MetricsEvaluater, MyWav2Vec2Processor, SampleSaver
 import light_hf_proxy
 
@@ -104,7 +104,8 @@ def train(rank, a, h, avhubert_config):
         else:
             unit_key = "km"
     use_farl = a.use_farl
-    use_svts = a.svts
+    use_svts = h.svts
+    per_step_scheduler_update = h.revise_setting or h.svts
     generator = AVHuBERTGenerator(hifigenerator_config=h,
                                   avhubert_model_config=avhubert_config["model"], 
                                   generator_mode=generator_mode,
@@ -189,6 +190,7 @@ def train(rank, a, h, avhubert_config):
         optim_d = torch.optim.AdamW(itertools.chain(msd.parameters(), mpd.parameters()),
                                     h.learning_rate, betas=[h.adam_b1, h.adam_b2])
     actual_total_updates = math.ceil(h.total_updates / h.num_gpus)
+    actual_frozen_updates = math.ceil(h.frozen_steps / h.num_gpus)
     part_updates = math.ceil(actual_total_updates / a.n_ckpts)
     saving_updates = {x for x in range(part_updates, actual_total_updates+1, part_updates)}
     logging.info(f"{actual_total_updates=}")
@@ -200,10 +202,9 @@ def train(rank, a, h, avhubert_config):
         elif a.train_mode == VIDEO2MEL_MODE:
             if state_dict_g is not None:
                 optim_g.load_state_dict(state_dict_g['optim_g'])
-        if not h.revise_setting:
-            scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=h.lr_decay, last_epoch=last_epoch)
-        else:
-            actual_frozen_updates = math.ceil(h.frozen_steps / h.num_gpus)
+        if h.svts:
+            scheduler_g = WarmupCosineScheduler(optim_g, actual_total_updates, h.warmup_percent)
+        elif h.revise_setting:
             if steps <= actual_frozen_updates:
                 logging.info(f"AVHuBERT will be frozen for {actual_frozen_updates} updates.")
                 generator_module.frontend_with_encoder.avhubert_grad(False)
@@ -211,6 +212,8 @@ def train(rank, a, h, avhubert_config):
                 logging.info(f"current {steps=}. AVHuBERT will not be frozen after {actual_frozen_updates} updates.")
             # Exactly as in ReVISE Tab. 17
             scheduler_g = TriStageLRScheduler(optim_g, actual_total_updates, h.t1_percent, h.t2_percent, last_lr_factor=h.last_lr_factor,last_epoch=steps-1)
+        else:
+            scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=h.lr_decay, last_epoch=last_epoch)
         if a.train_mode == VIDEO2WAV_MODE:
             scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=h.lr_decay, last_epoch=last_epoch)
 
@@ -379,6 +382,8 @@ def train(rank, a, h, avhubert_config):
                     alpha_avhubert = h.base_alpha_avhubert
                 if y_g_avhubert_mel is not None:
                     loss_mel_avhubert = F.l1_loss(y_mel.masked_select(~mel_padding_mask.unsqueeze(1)), y_g_avhubert_mel.masked_select(~mel_padding_mask.unsqueeze(1))) * alpha_avhubert
+                if h.svts:
+                    loss_spec_conv = spectral_convergence_loss(y_g_avhubert_mel, y_mel)
 
                 if a.train_mode == VIDEO2WAV_MODE:
                     y_df_hat_r, y_df_hat_g, fmap_f_r, fmap_f_g = mpd(y, y_g_hat)
@@ -393,6 +398,8 @@ def train(rank, a, h, avhubert_config):
                 if y_g_avhubert_mel is not None:
                     # ReVISE doesn't need this loss
                     loss_gen_all += loss_mel_avhubert
+                if h.svts:
+                    loss_gen_all += loss_spec_conv
                 if h.unit_name is not None:
                     loss_gen_all += unit_loss
                 loss_gen_all.backward()
@@ -433,7 +440,7 @@ def train(rank, a, h, avhubert_config):
                         log_training("alpha_avhubert", alpha_avhubert)
 
                 steps += 1
-                if h.revise_setting:
+                if per_step_scheduler_update:
                     # scheduler is updated step-level
                     scheduler_g.step()
                     if steps == actual_frozen_updates:
@@ -499,7 +506,7 @@ def train(rank, a, h, avhubert_config):
                 if steps == actual_total_updates:
                     # Early breaking
                     break
-            if not h.revise_setting:
+            if not per_step_scheduler_update:
                 scheduler_g.step()
             if a.train_mode == VIDEO2WAV_MODE:  
                 scheduler_d.step()
@@ -774,7 +781,6 @@ def main():
     parser.add_argument('--test_all', action='store_true', help='equivalent to --test but with eer test which should be time consuming (Multi-GPU supported).')
     parser.add_argument('--n_ckpts', type=int, default=10, help='number of checkpoints to be saved.')
     parser.add_argument('--save_samples', action='store_true', help='If enabled, will save video-audio synced files in checkpointdir which is used for LSE-C/D and MOS evaluation.')
-    parser.add_argument('--svts', action='store_true', help='If specified, will apply SVTS as frontend encoder. avhubert_config is still needed to load dataset.')
 
     a = parser.parse_args()
     if a.save_samples or a.test_all:

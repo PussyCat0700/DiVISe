@@ -1,4 +1,5 @@
 import glob
+import math
 import os
 import random
 import tempfile
@@ -36,6 +37,24 @@ class TriStageLRScheduler(LRScheduler):
             # Linearly decay the learning rate to last_lr_factor of the base_lr
             decay_progress = (self.last_epoch - self.t1_updates - self.t2_updates) / self.t3_updates
             return [base_lr - (base_lr * (1 - self.last_lr_factor) * decay_progress) for base_lr in self.base_lrs]
+
+class WarmupCosineScheduler(LRScheduler):
+    def __init__(self, optimizer, total_iters, warmup_ratio, min_lr=0, last_epoch=-1):
+        self.total_iters = total_iters
+        self.warmup_iters = int(warmup_ratio * total_iters / 100)
+        self.min_lr = min_lr
+        super(WarmupCosineScheduler, self).__init__(optimizer, last_epoch)
+    
+    def get_lr(self):
+        current_iter = self.last_epoch
+        if current_iter < self.warmup_iters:
+            warmup_factor = (current_iter + 1) / self.warmup_iters
+            return [base_lr * warmup_factor for base_lr in self.base_lrs]
+        else:
+            cosine_iter = current_iter - self.warmup_iters
+            cosine_total = self.total_iters - self.warmup_iters
+            cosine_factor = (1 + math.cos(math.pi * cosine_iter / cosine_total)) / 2
+            return [self.min_lr + (base_lr - self.min_lr) * cosine_factor for base_lr in self.base_lrs]
 
 def seed_everything(seed):
     if torch.distributed.is_initialized():

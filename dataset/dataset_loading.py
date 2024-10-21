@@ -29,6 +29,7 @@ def load_hifigan_config(hifigan_config_dir):
     default_nones = {
         'prosody_type', 'st_type', 'hu_repr_name',
         'unit_name', 'valid_unit_name', 'test_unit_name',
+        'svts', 'revise_setting',
     }
     json_config.update({k:None for k in default_nones if k not in json_config.keys()})
     h = AttrDict(json_config)

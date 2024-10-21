@@ -21,6 +21,7 @@ from torch.utils.data import Dataset
 from scipy.io import wavfile
 from constants import CLASSIFICATION_TASK_EMOTION, CLASSIFICATION_TASK_GENDER
 from dataset.meldataset import load_wav
+from torchvision.transforms import RandomErasing
 from emotion.ravdess.ravdess_paths import TEST_HUBERT_TSV, TEST_TSV, TRAIN_HUBERT_TSV, TRAIN_TSV, VALID_HUBERT_TSV, VALID_TSV
 
 DBG=True
@@ -135,6 +136,7 @@ class AVHubertDataset(FairseqDataset):
             noise_num=1,
             vid_dict=False,
             image_tsv_path=None,
+            svts=False,
     ):
         self.modalities = set(modalities)  # should always be {'video', 'audio'}
         self.audio_root, self.names, inds, tot, self.sizes, self.vid_dict, self.images = load_audio_visual_simple(manifest_path, max_keep_sample_size, min_keep_sample_size, vid_dict, image_tsv_path)
@@ -175,11 +177,20 @@ class AVHubertDataset(FairseqDataset):
         # speech tokens are stored in multiple text-format files under the dir of audio files.
         self.st_type = st_type
         if image_aug:
-            self.transform = custom_utils.Compose([
-                custom_utils.Normalize( 0.0,255.0 ),
-                custom_utils.RandomCrop((image_crop_size, image_crop_size)),
-                custom_utils.HorizontalFlip(0.5),
-                custom_utils.Normalize(image_mean, image_std) ])
+            if svts:
+                self.transform = custom_utils.Compose([
+                    custom_utils.RandomCrop((image_crop_size, image_crop_size)),
+                    custom_utils.HorizontalFlip(0.5),
+                    RandomErasing(p=0.5,scale=(0.02, 0.33), ratio=(0.3, 3.3)),
+                    custom_utils.TimeMasking(),
+                    custom_utils.Normalize( 0.0,255.0 ),
+                    custom_utils.Normalize(image_mean, image_std)])
+            else:
+                self.transform = custom_utils.Compose([
+                    custom_utils.Normalize( 0.0,255.0 ),
+                    custom_utils.RandomCrop((image_crop_size, image_crop_size)),
+                    custom_utils.HorizontalFlip(0.5),
+                    custom_utils.Normalize(image_mean, image_std) ])
         else:
             self.transform = custom_utils.Compose([
                 custom_utils.Normalize( 0.0,255.0 ),

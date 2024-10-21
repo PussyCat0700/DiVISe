@@ -491,6 +491,17 @@ def generator_loss(disc_outputs, wav_mask=None, loss_type:str=None):
 
     return loss, gen_losses
 
+
+def spectral_convergence_loss(x_mag, y_mag):
+        """Calculate forward propagation.
+        Args:
+            x_mag (Tensor): Magnitude spectrogram of predicted signal (B, #frames, #freq_bins).
+            y_mag (Tensor): Magnitude spectrogram of groundtruth signal (B, #frames, #freq_bins).
+        Returns:
+            Tensor: Spectral convergence loss value.
+        """
+        return torch.norm(y_mag - x_mag, p="fro") / torch.norm(y_mag, p="fro")
+
 class EmbeddingClassifier(nn.Module):
     def __init__(self, input_size, num_classes):
         super().__init__()

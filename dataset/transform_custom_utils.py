@@ -9,6 +9,7 @@ import torch
 import random
 import numpy as np
 from typing import Dict, List, Optional, Tuple
+import math
 
 def load_video(path):
     for i in range(3):
@@ -177,6 +178,24 @@ class HorizontalFlip(object):
         if random.random() < self.flip_ratio:
             for index in range(t):
                 frames[index] = cv2.flip(frames[index], 1)
+        return frames
+
+class TimeMasking:
+    """Average Time Masking as in SVTS."""
+    def __init__(self, debug=False):
+        self.debug = debug
+
+    def __call__(self, frames): 
+        num_masks = len(frames) // 25  # 1 mask per second
+        mean_time_mask_value = np.mean(frames, axis=0)
+        for j in range(num_masks):
+            mask_duration_secs = np.random.uniform(0, 0.4)  # a mask can have a max of 8 frames
+            mask_duration_frames = math.ceil(25 * mask_duration_secs)  # choose num frames to mask
+            frame_index = random.randint(j * 25, ((j * 25) + 25) - mask_duration_frames)  # choose start index of mask
+            frames[frame_index:frame_index + mask_duration_frames, :, :] = mean_time_mask_value
+            if self.debug:
+                print(f'Mask {j + 1}:', mask_duration_secs, mask_duration_frames, frame_index, frame_index + mask_duration_frames, len(frames))
+
         return frames
 
 def compute_mask_indices(
