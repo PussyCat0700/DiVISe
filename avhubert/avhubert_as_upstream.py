@@ -161,13 +161,13 @@ class AVHubertEncoder(FrontendWithEncoder):
         # source should only include video
         encoder_out, feature, mask = self.avhubert_model.extract_finetune_with_feature(source)  # (bs, vidlen, 768)
         encoder_out = self.avhubert2downstream(encoder_out)  # (bs, vidlen, attention_dim*4)
+        # (bs, vidlen, attention_dim*4) -> (bs, 4*vidlen, attention_dim)
+        encoder_out = encoder_out.reshape(*encoder_out.shape[:-2], -1, self.attention_dim)
         if self.with_conformer:
-            # (bs, vidlen, attention_dim*4) -> (bs, 4*vidlen, attention_dim)
-            encoder_out = encoder_out.reshape(*encoder_out.shape[:-2], -1, self.attention_dim)
             encoder_out = self.conformer_encoder(encoder_out, mel_mask)
-            if not self.mel_mode:
-                # ReVISE+Conformer is upsampled in unit upsampler outside.
-                encoder_out = encoder_out.reshape(*encoder_out.shape[:-2], -1, self.attention_dim*4)
+        if not self.mel_mode:
+            # ReVISE+Conformer is upsampled in unit upsampler outside.
+            encoder_out = encoder_out.reshape(*encoder_out.shape[:-2], -1, self.attention_dim*4)
         
         return self._get_output(feature, encoder_out)
 

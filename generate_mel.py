@@ -4,7 +4,7 @@ import sys
 import warnings
 import numpy as np
 from tqdm import tqdm
-from constants import GRIFFINLIM, HIFIGAN_NO_GRAD, HIFIGAN_WITH_GRAD, UNIT_HIFIGAN_NO_GRAD
+from constants import GRIFFINLIM, UNIT_HIFIGAN_NO_GRAD, UNIT_METHODS
 
 from dataset import load_avhubert_config, load_dataset, get_dataloader
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -29,9 +29,6 @@ logging.basicConfig(
     )
 logging.getLogger(__name__)
 
-VIDEO2MEL_MODE = "v2m"
-VIDEO2WAV_MODE = "v2w"
-
 # TODO magic path is bad
 from pathlib import Path
 se_path = Path("/data1/yfliu/model/CorentinJ/encoder.pt")
@@ -52,12 +49,9 @@ def generate_mel(rank, a, h, avhubert_config):
     seed_everything(h.seed)
     torch.cuda.set_device(rank)  # A very strong boost. See https://github.com/jik876/hifi-gan/pull/25
     device = torch.device('cuda:{:d}'.format(rank))
-    if a.train_mode == VIDEO2MEL_MODE:
-        generator_mode = HIFIGAN_NO_GRAD if a.hifigan_ckpt is not None else GRIFFINLIM
-        if h.unit_name is not None and h.unit_method == UNIT_HIFIGAN_NO_GRAD:
-            generator_mode = UNIT_HIFIGAN_NO_GRAD
-    elif a.train_mode == VIDEO2WAV_MODE:
-        generator_mode = HIFIGAN_WITH_GRAD
+    generator_mode = GRIFFINLIM
+    if h.unit_name is not None and h.unit_method == UNIT_HIFIGAN_NO_GRAD:
+        generator_mode = UNIT_HIFIGAN_NO_GRAD
     generator = AVHuBERTGenerator(hifigenerator_config=h,
                                   avhubert_model_config=avhubert_config["model"],
                                   generator_mode=generator_mode,
@@ -72,31 +66,17 @@ def generate_mel(rank, a, h, avhubert_config):
     if os.path.isdir(a.checkpoint_path):
         cp_g = scan_checkpoint(a.checkpoint_path, 'g_')
 
-    if a.avhubert_ckpt is not None:
-        generator.load_pretrained_avhubertmodel(a.avhubert_ckpt, map_location=device)
     if a.svts:
         generator.load_spkencoder_for_svts(se_path, device=device)
-    if a.hifigan_ckpt is not None:
-        hifigan_weight = torch.load(a.hifigan_ckpt, map_location=device)
-        def unwrap_module_generator(weight, ignore_conv_pre:bool):
-            if ignore_conv_pre:
-                return {'.'.join(k.split('.')[1:]):v for k,v in weight.items() if 'conv_pre' not in k}
-            else:
-                return {'.'.join(k.split('.')[1:]):v for k,v in weight.items()}
-        generator.generator.load_state_dict(unwrap_module_generator(
-            hifigan_weight["generator"]["model"], ignore_conv_pre=a.train_mode==VIDEO2WAV_MODE,
-            ))
-    # TODO: It is really unreasonable to keep all training states in state_dict_do, and it is still here just for compatibility.
-    if a.train_mode == VIDEO2WAV_MODE:
-        if cp_g is not None:
-            state_dict_g = load_checkpoint(cp_g, device)
-            generator.load_state_dict(state_dict_g['generator'])
-    elif a.train_mode == VIDEO2MEL_MODE:
-        if cp_g is None:
-            state_dict_g = None
+    if cp_g is None:
+        state_dict_g = None
+    else:
+        state_dict_g = load_checkpoint(cp_g, device)
+        # TODO this is redundant but works like a trap. Careful if you want to lint them
+        if h.unit_name is not None and h.unit_method in UNIT_METHODS:
+            generator.load_state_dict(state_dict_g['generator'], strict=not a.skip_ckptcheck)
         else:
-            state_dict_g = load_checkpoint(cp_g, device)
-            generator.load_state_dict(state_dict_g['generator'])
+            generator.load_full_model_weight(state_dict_g['generator'], ignore_generator=True)
 
     if h.num_gpus > 1:
         generator = DistributedDataParallel(generator, device_ids=[rank], find_unused_parameters=True).to(device)
@@ -166,19 +146,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--checkpoint_path', required=True)
     parser.add_argument('--hifigan_config', default='conf/hifigan/video2speech_template.json')  # TODO: Change back in formal release
-    parser.add_argument('--avhubert_config', default='conf/avhubert/base_avhubert_30h.yaml')
-    parser.add_argument('--avhubert_ckpt', help='if specified, will load pretrained weight onto AVHuBERTModel')
-    parser.add_argument('--hifigan_ckpt', help='if specified, will load pretrained weight onto HiFi-GAN in v2w mode'\
-        ' as part of the model or in v2m mode (with gradient) as mel-to-audio converter in v2w mode(without gradient)')
+    parser.add_argument('--avhubert_config', default='conf/avhubert/large_avhubert.yaml')
     parser.add_argument('--postfix', default='generated')
     parser.add_argument('--stdout_interval', default=5, type=int)
     parser.add_argument('--summary_interval', default=100, type=int)
     parser.add_argument('--wandb', action='store_true')
     parser.add_argument('--svts', action='store_true')
-    parser.add_argument('--train_mode', choices=[VIDEO2MEL_MODE, VIDEO2WAV_MODE], default=VIDEO2MEL_MODE, help='v2w(video2wav), v2m(video2mel)')
 
     a = parser.parse_args()
-    logging.info(f'Proceeding with mode {a.train_mode}')
 
     with open(a.hifigan_config) as f:
         data = f.read()
@@ -187,13 +162,12 @@ def main():
     if 'unit_name' not in json_config:
         json_config['unit_name'] = None
     h = AttrDict(json_config)
-    if a.train_mode == VIDEO2MEL_MODE:
-        # give random port to avoid collision
-        url = h.dist_config['dist_url']
-        splits = url.split(":")
-        port = int(splits[-1])
-        port -= random.randint(100, 1000)
-        h.dist_config['dist_url'] = ':'.join(splits[:-1]+[str(port)])
+    # give random port to avoid collision
+    url = h.dist_config['dist_url']
+    splits = url.split(":")
+    port = int(splits[-1])
+    port -= random.randint(100, 1000)
+    h.dist_config['dist_url'] = ':'.join(splits[:-1]+[str(port)])
     # build_env(a.hifigan_config, 'hifigan_config.json', a.checkpoint_path)
     
     avhubert_config = load_avhubert_config(a.avhubert_config)

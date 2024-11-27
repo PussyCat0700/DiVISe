@@ -270,7 +270,7 @@ def train(rank, a, h, avhubert_config):
         dataloading_kwargs.update(**kwargs)
         testset = load_dataset("test", avhubert_config["task"], **dataloading_kwargs)
         test_loader, _ = get_dataloader(testset, 
-                                        batch_size=h.batch_size,
+                                        batch_size=1,
                                         num_workers=1, 
                                         drop_last=False,
                                         shuffle=False)

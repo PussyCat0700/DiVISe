@@ -242,8 +242,8 @@ class MetricsEvaluater:
             max_audio_sample_size=4*16000,  # 4 seconds. Longer is better but consumes more mem.
             pad_audio=False,
         ).tolist()
-        degs = [x.masked_select(mask).cpu().numpy() for mask, x in zip(wav_padding_mask, degs.squeeze().detach())]
-        refs = [x.masked_select(mask).cpu().numpy() for mask, x in zip(wav_padding_mask, refs.squeeze().detach())]
+        degs = [x.masked_select(mask).cpu().numpy() for mask, x in zip(wav_padding_mask, degs.detach())]
+        refs = [x.masked_select(mask).cpu().numpy() for mask, x in zip(wav_padding_mask, refs.detach())]
         nisqa_results = []
         for audio in degs:
             result = self.nisqa_model.predict(audio[None, ...], 16000)
