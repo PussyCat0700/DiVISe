@@ -1,0 +1,3 @@
+[submodule "custom_hifigan"]
+	path = custom_hifigan
+	url = https://github.com/PussyCat0700/16k_hifigan.git
