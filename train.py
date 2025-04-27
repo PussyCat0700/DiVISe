@@ -700,10 +700,11 @@ def test_eer(
     eer_metric = EERMetric(device)
     model.eval()
     torch.cuda.empty_cache()
+    # EER test is done on VoxCeleb2 pairs and can be time consuming.
     # TODO Current version of code does not yet cover guidelines of EER evaluation.
-    # if you need to test EER, open an issue to let us know!
-    vox2_avhubert_path = "conf/avhubert/large_avhubert_vox2all.yaml"
-    pair_path = "/data1/yfliu/voxceleb2/voxceleb2_testpairs.txt"
+    # if you need further guidelines on EER testing, open an issue to let us know!
+    vox2_avhubert_path = "conf/avhubert/large_avhubert_vox2all.yaml"  # [task:data] should be Vox2 dir.
+    pair_path = "./contrastive/voxceleb2_testpairs.txt"
     corentinJEncoder.load_model(se_path, device)
     # vox2 test set
     mode = TEST_MODE

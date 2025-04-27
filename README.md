@@ -44,7 +44,7 @@ Two config files will be needed to run the code. Genrally, `conf/avhubert` handl
     |DiVISe|[conf/hifigan/video2speech_template.json](conf/hifigan/video2speech_template.json)|
     |ReVISE|[conf/hifigan/video2speech_revise_original.json](conf/hifigan/video2speech_revise_original.json)|
 
-## Training
+## V2S Training
 
 For strict reimplementation, please follow the number of GPUs given below. as the number of updates is set **per GPU** in our setting, the number of updates will differ with a different number of GPUs. RTX 3090 or RTX4090 will be fine in our case.
     -  4 are required to run 30h setting.
@@ -56,7 +56,7 @@ Script references are given as listed below. Here we assume we train with 433h f
 
 - your_ckpt_path=[REPLACE HERE]  # ckpt path
 - your_avhubert_ckpt=[REPLACE HERE]  # base_lrs3_iter5.pt for BASE setting and large_vox_iter5.pt for LARGE - setting (default) You may find these checkpoints [here](https://facebookresearch.github.io/av_hubert/).
-- your_hifigan_ckpt=[REPLACE HERE]  # One can use more vocoders other than HiFi-GAN for DiViSe. See train.py's argparser for more information. For ReVISE, ensure you're using Unit-HiFiGAN. You may find these checkpoints [here](#pretrained-model).
+- your_hifigan_ckpt=[REPLACE HERE]  # You may find these checkpoints [here](#pretrained-model).
 
 ### Training Commands
 
@@ -71,6 +71,27 @@ Script references are given as listed below. Here we assume we train with 433h f
 
 Evaluation can be done by simply adding an extra `--test` argument in [Training Commands](#training-commands), with only a single GPU.
 
+
+## Vocoder Fine-tuning
+
+### Enviornment Variables
+
+- hfg_ckpt_pretrained=[REPLACE HERE] # file path to vocoder pre-trained on 16k LJSpeech dataset.
+- data_dir=[REPLACE HERE] # fill with task:data in your avhubert config.
+- vc_ft_ckpt_path=[REPLACE HERE] # ckpt path for vocoder fine-tuning.
+- mel_postfix=[REPLACE HERE] # mel export file identifier.
+
+### Training Pipeline
+
+1. export log Mel-Spectrograms with [generate_mel.py](./generate_mel.py).
+
+    `python generate_mel.py --checkpoint_path $your_ckpt_path --avhubert_config conf/avhubert/large_avhubert_template.yaml --postfix $mel_postfix`
+
+1. `cd custom_hifigan` and fine-tune the vocoder on the generated log Mel-spectrograms with the following command with 8 GPUs.
+
+    `python train.py $data_dir $vc_ft_ckpt_path --resume $hfg_ckpt_pretrained --finetune --npy mel_"$mel_postfix" --wandb`
+
+
 ## Pretrained Model
 
 We release the links to model parameters trained under full resource setting of LRS3 in this paper as follows.
@@ -82,13 +103,16 @@ We release the links to model parameters trained under full resource setting of 
 |ReVISE (Our Implementation)||
 
 ### Vocoders
-All vocoders are trained on resampled version (16kHz) of LJSpeech Dataset in [custom_hifigan](./custom_hifigan/).
+The vocoders are pre-trained on resampled version (16kHz) of LJSpeech Dataset.
 |Models|Link|
 |:------:|---|
 |HiFiGAN (Fine-tuned For DiVISe)||
 |HiFiGAN (Pre-trained only)||
 |Unit-HiFiGAN (For ReVISE)||
 
+## Audio Demos
+
+We provide a simple demo page [here](https://pussycat0700.github.io/DiVISe-Demo/). If you require all samples in LRS3 test set, please contact us via email to let us know.
 
 ## Acknowledgements
 Special thanks to [HiFi-GAN](https://github.com/jik876/hifi-gan) and [AV-HuBERT](https://github.com/facebookresearch/av_hubert/), where this repository is built upon. We also appreciate all other works mentioned in this repository.
