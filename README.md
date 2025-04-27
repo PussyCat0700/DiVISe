@@ -14,7 +14,7 @@ DiVISe effectively preserves speaker characteristics in the generated audio, and
 ## What we open source in this repository:
 
 1. DiViSe implementation and an unofficial ReVISE re-implementation for Video-to-Speech task.
-1. Scripts to train vocoders on resampled LJSpeech (16kHz). This is given in [custom_hifigan](./custom_hifigan/) as a git submodule forked from [bshall's implementation](https://github.com/bshall/hifigan).
+1. Scripts to train vocoders on resampled LJSpeech (16kHz). This is given in [custom_hifigan](https://github.com/PussyCat0700/16k_hifigan/tree/96117d174592380841e3051150e456b4af3d3dd2) as a git submodule forked from [bshall's implementation](https://github.com/bshall/hifigan).
 1. Pretrained parameters for DiVISe and ReVISE in our implementation, as well as their vocoders.
 
 ## Pre-requisites
@@ -48,8 +48,8 @@ Two config files will be needed to run the code. Genrally, `conf/avhubert` handl
 ## V2S Training
 
 For strict reimplementation, please follow the number of GPUs given below. as the number of updates is set **per GPU** in our setting, the number of updates will differ with a different number of GPUs. RTX 3090 or RTX4090 will be fine in our case.
-    -  4 are required to run 30h setting.
-    -  8 are required to run 433h setting.
+-  4 are required to run 30h setting.
+-  8 are required to run 433h setting.
 
 Script references are given as listed below. Here we assume we train with 433h full-resource setup with 8 GPUs.
 

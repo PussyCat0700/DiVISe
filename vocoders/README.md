@@ -1,4 +1,4 @@
-**This folder is no longer maintained and is only left here for legacy support.** If you are looking for vocoder fine-tuning, please go to our [git submodule](../custom_hifigan/).
+**This folder is no longer maintained and is only left here for legacy support.** If you are looking for vocoder fine-tuning, please go to our [git submodule](https://github.com/PussyCat0700/16k_hifigan/tree/96117d174592380841e3051150e456b4af3d3dd2).
 
 This directory only includes model files of vocoders. Training scripts are given as follows:
 
