@@ -1,7 +1,8 @@
 # DiVISe: Direct Visual-Input Speech Synthesis Preserving Speaker Characteristics And Intelligibility
 
 [![arXiv](https://img.shields.io/badge/arXiv-Paper-<COLOR>.svg)](https://arxiv.org/abs/2503.05223v1)
-[![githubio](https://img.shields.io/static/v1?message=Audio%20Samples&logo=Github&labelColor=grey&color=blue&logoColor=white&label=%20&style=flat)](https://pussycat0700.github.io/DiVISe-Demo/)
+[![githubio](https://img.shields.io/static/v1?message=Demo%20Page&logo=Github&labelColor=grey&color=blue&logoColor=white&label=%20&style=flat)](https://pussycat0700.github.io/DiVISe-Demo/)
+[![Google Drive](https://img.shields.io/badge/Audio%20Demos-4285F4?logo=googledrive&logoColor=fff)](https://drive.google.com/file/d/1DxQiAaV5fIfBBZIn3w7cJ_XgegzFgszy/view?usp=sharing)
 
 This is the official implementation for [**DiVISe: Direct Visual-Input Speech Synthesis Preserving Speaker Characteristics And Intelligibility**](https://arxiv.org/abs/2503.05223v1).
 
@@ -18,7 +19,7 @@ DiVISe effectively preserves speaker characteristics in the generated audio, and
 
 ## Pre-requisites
 1. Python 3.8
-1. Install python requirements. Please refer to [requirements.txt](requirements.txt). [TODO: Current requirements.txt may be inaccurate.]
+1. Install [requirements.txt](requirements.txt).
 1. initialize submodule with `git submodule update --init --recursive`.
 1. Replace `SPEAKER_ENCODER_PATH` with your path in [env.py](./env.py).
 
@@ -94,25 +95,26 @@ Evaluation can be done by simply adding an extra `--test` argument in [Training 
 
 ## Pretrained Model
 
-We release the links to model parameters trained under full resource setting of LRS3 in this paper as follows.
+We release the links to model parameters trained with full resource setting of LRS3 in this paper [here](https://nc.sjtu-lumia.cn:5090/index.php/s/AewDWX4gYGEWPpH).
 
 ### V2S Models
-|Model|Link|
+|Model|Name|
 |:------:|---|
-|DiViSe||
-|ReVISE (Our Implementation)||
+|DiViSe|g_45000_divse|
+|ReVISE (Our Implementation)|g_45000_revise|
 
 ### Vocoders
 The vocoders are pre-trained on resampled version (16kHz) of LJSpeech Dataset.
-|Models|Link|
+|Models|Name|
 |:------:|---|
-|HiFiGAN (Fine-tuned For DiVISe)||
-|HiFiGAN (Pre-trained only)||
-|Unit-HiFiGAN (For ReVISE)||
+|HiFiGAN (Fine-tuned For DiVISe)|model_hfgfinetuned.pt|
+|HiFiGAN (Pre-trained only)|model_hfgpretrained.pt|
+|Unit-HiFiGAN (For ReVISE)|model_unithfg.pt|
 
 ## Audio Demos
 
-We provide a simple demo page [here](https://pussycat0700.github.io/DiVISe-Demo/). If you require all samples in LRS3 test set, please contact us via email to let us know.
+- Full samples for LRS3 test set can be downloaded [here](https://drive.google.com/file/d/1DxQiAaV5fIfBBZIn3w7cJ_XgegzFgszy/view?usp=sharing). Files with postfix `_vc` are generated with DiVISe as reported in the paper, while those with `_gf` are synthesized with Griffin-Lim for comparison.
+- We also provide a simple demo page [here](https://pussycat0700.github.io/DiVISe-Demo/).
 
 ## Acknowledgements
 Special thanks to [HiFi-GAN](https://github.com/jik876/hifi-gan) and [AV-HuBERT](https://github.com/facebookresearch/av_hubert/), where this repository is built upon. We also appreciate all other works mentioned in this repository.
