@@ -269,7 +269,6 @@ class AVHuBERTGenerator(nn.Module):
                         wav_generated = self.generator(indices, farl_img_input)
                     elif self.generator_mode == UNIT_SPEECH_TOKENIZER_NO_GRAD:
                         wav_generated = self.generator(indices.unsqueeze(0), st=0).squeeze(0)
-            # TODO add support for Hybrid mode
         else:
             wav_generated = None
         # (bs, mellen, num_mels) -> (bs, num_mels, mellen)

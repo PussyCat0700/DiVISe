@@ -16,7 +16,7 @@ import wandb
 import torch.multiprocessing as mp
 from torch.distributed import init_process_group
 from torch.nn.parallel import DistributedDataParallel
-from env import AttrDict
+from env import SPEAKER_ENCODER_PATH, AttrDict
 from models import AVHuBERTGenerator
 from utils import scan_checkpoint, load_checkpoint, seed_everything
 
@@ -29,9 +29,8 @@ logging.basicConfig(
     )
 logging.getLogger(__name__)
 
-# TODO magic path is bad
 from pathlib import Path
-se_path = Path("/data1/yfliu/model/CorentinJ/encoder.pt")
+se_path = Path(SPEAKER_ENCODER_PATH)
 
 
 def generate_mel(rank, a, h, avhubert_config):
@@ -72,7 +71,7 @@ def generate_mel(rank, a, h, avhubert_config):
         state_dict_g = None
     else:
         state_dict_g = load_checkpoint(cp_g, device)
-        # TODO this is redundant but works like a trap. Careful if you want to lint them
+        # TODO this is redundant but does work.
         if h.unit_name is not None and h.unit_method in UNIT_METHODS:
             generator.load_state_dict(state_dict_g['generator'], strict=not a.skip_ckptcheck)
         else:
@@ -145,7 +144,7 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--checkpoint_path', required=True)
-    parser.add_argument('--hifigan_config', default='conf/hifigan/video2speech_template.json')  # TODO: Change back in formal release
+    parser.add_argument('--hifigan_config', default='conf/hifigan/video2speech_template.json')
     parser.add_argument('--avhubert_config', default='conf/avhubert/large_avhubert.yaml')
     parser.add_argument('--postfix', default='generated')
     parser.add_argument('--stdout_interval', default=5, type=int)

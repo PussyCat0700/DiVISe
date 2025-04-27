@@ -20,6 +20,7 @@ DiVISe effectively preserves speaker characteristics in the generated audio, and
 1. Python 3.8
 1. Install python requirements. Please refer to [requirements.txt](requirements.txt). [TODO: Current requirements.txt may be inaccurate.]
 1. initialize submodule with `git submodule update --init --recursive`.
+1. Replace `SPEAKER_ENCODER_PATH` with your path in [env.py](./env.py).
 
 ## Data Preparation
 1. (LRS3) Please refer to [AV-HuBERT](https://github.com/facebookresearch/av_hubert/tree/258fb50e155134eec2c4b49c2ae8de267075fd18/avhubert/preparation).

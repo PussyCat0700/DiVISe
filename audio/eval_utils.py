@@ -1,5 +1,6 @@
 import os
 import editdistance
+from env import SPEAKER_ENCODER_PATH
 import nisqalib
 import numpy as np
 from pesq import pesq
@@ -208,9 +209,8 @@ class MetricsEvaluater:
             self.err_tot['algorithmic'].add(self.unit_recall_name)
             self.err_tot['algorithmic'].add(self.unit_precision_name)
             self.err_tot['algorithmic'].add(self.unit_auc_name)
-        # TODO magic path is bad
         from pathlib import Path
-        se_path = Path("/data1/yfliu/model/CorentinJ/encoder.pt")
+        se_path = Path(SPEAKER_ENCODER_PATH)
         corentinJEncoder.load_model(se_path, device)
         # WER is computed with algorithmic averaging according to https://github.com/facebookresearch/av_hubert/blob/258fb50e155134eec2c4b49c2ae8de267075fd18/avhubert/infer_s2s.py#L254
         self.err_tot['algorithmic'].add(self.wer_name)

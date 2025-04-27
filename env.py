@@ -2,6 +2,9 @@ import os
 import shutil
 
 
+SPEAKER_ENCODER_PATH = "./CorentinJ/encoder.pt"  # Available at https://github.com/CorentinJ/Real-Time-Voice-Cloning/wiki/Pretrained-models
+
+
 class AttrDict(dict):
     def __init__(self, *args, **kwargs):
         super(AttrDict, self).__init__(*args, **kwargs)

@@ -30,7 +30,7 @@ import wandb
 import torch.multiprocessing as mp
 from torch.distributed import init_process_group
 from torch.nn.parallel import DistributedDataParallel
-from env import AttrDict, build_env
+from env import SPEAKER_ENCODER_PATH, AttrDict, build_env
 from dataset.meldataset import MelSpectrogramInverter,LogMelSpectrogram
 from models import AVHuBERTGenerator, MultiPeriodDiscriminator, MultiScaleDiscriminator, feature_loss, generator_loss,\
     discriminator_loss, spectral_convergence_loss
@@ -55,9 +55,8 @@ best_metrics = None
 steps = 0
 
 
-# TODO magic path is bad
 from pathlib import Path
-se_path = Path("/data1/yfliu/model/CorentinJ/encoder.pt")
+se_path = Path(SPEAKER_ENCODER_PATH)
 
 
 def train(rank, a, h, avhubert_config):
@@ -156,7 +155,7 @@ def train(rank, a, h, avhubert_config):
             last_epoch = -1
         else:
             state_dict_g = load_checkpoint(cp_g, device)
-            # TODO this is redundant but works like a trap. Careful if you want to lint them
+            # TODO this is redundant but does work.
             if h.unit_name is not None and h.unit_method in UNIT_METHODS:
                 generator.load_state_dict(state_dict_g['generator'], strict=not a.skip_ckptcheck)
             else:
@@ -701,7 +700,8 @@ def test_eer(
     eer_metric = EERMetric(device)
     model.eval()
     torch.cuda.empty_cache()
-    # TODO magic path is bad
+    # TODO Current version of code does not yet cover guidelines of EER evaluation.
+    # if you need to test EER, open an issue to let us know!
     vox2_avhubert_path = "conf/avhubert/large_avhubert_vox2all.yaml"
     pair_path = "/data1/yfliu/voxceleb2/voxceleb2_testpairs.txt"
     corentinJEncoder.load_model(se_path, device)
