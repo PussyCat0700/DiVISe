@@ -70,7 +70,8 @@ Script references are given as listed below. Here we assume we train with 433h f
 
 ## Evaluation
 
-Evaluation can be done by simply adding an extra `--test` argument in [Training Commands](#training-commands), with only a single GPU.
+- Evaluation can be done by simply adding an extra `--test` argument in [Training Commands](#training-commands), with only a single GPU.
+- `--save_samples` can be added to export the synthesized audio under `$your_ckpt_path`.
 
 
 ## Vocoder Fine-tuning
