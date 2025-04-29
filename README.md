@@ -13,7 +13,7 @@ DiVISe effectively preserves speaker characteristics in the generated audio, and
 
 ## What we open source in this repository:
 
-1. DiViSe implementation and an unofficial ReVISE re-implementation for Video-to-Speech task.
+1. DiVISe implementation and an unofficial ReVISE re-implementation for Video-to-Speech task.
 1. Scripts to train vocoders on resampled LJSpeech (16kHz). This is given in [custom_hifigan](https://github.com/PussyCat0700/16k_hifigan/tree/96117d174592380841e3051150e456b4af3d3dd2) as a git submodule forked from [bshall's implementation](https://github.com/bshall/hifigan).
 1. Pretrained parameters for DiVISe and ReVISE in our implementation, as well as their vocoders.
 
@@ -64,7 +64,7 @@ Script references are given as listed below. Here we assume we train with 433h f
 
 |Command|Model|
 |----|---|
-`python train.py --checkpoint_path $your_ckpt_path --hifigan_config conf/hifigan/video2speech_template.json --avhubert_config conf/avhubert/large_avhubert_template.yaml --avhubert_ckpt $your_avhubert_ckpt --hifigan_ckpt $your_hifigan_ckpt --wandb`|DiViSe|
+`python train.py --checkpoint_path $your_ckpt_path --hifigan_config conf/hifigan/video2speech_template.json --avhubert_config conf/avhubert/large_avhubert_template.yaml --avhubert_ckpt $your_avhubert_ckpt --hifigan_ckpt $your_hifigan_ckpt --wandb`|DiVISe|
 `python train.py --checkpoint_path $your_ckpt_path --hifigan_config conf/hifigan/video2speech_revise_original.json --avhubert_config conf/avhubert/large_avhubert_template.yaml --avhubert_ckpt $your_avhubert_ckpt --hifigan_ckpt $your_hifigan_ckpt --wandb`|ReVISE|
 
 
@@ -100,7 +100,7 @@ We release the links to model parameters trained with full resource setting of L
 ### V2S Models
 |Model|Name|
 |:------:|---|
-|DiViSe|g_45000_divse|
+|DiVISe|g_45000_divse|
 |ReVISE (Our Implementation)|g_45000_revise|
 
 ### Vocoders
