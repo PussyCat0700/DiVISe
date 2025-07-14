@@ -7,6 +7,7 @@ import torch.nn.functional as F
 import torch
 from torchmetrics.classification import BinaryROC
 from torchmetrics.utilities.data import dim_zero_cat
+from torchmetrics.functional.classification.precision_recall_curve import _binary_precision_recall_curve_update
 
 
 class EERMetric(BinaryROC):
@@ -20,7 +21,13 @@ class EERMetric(BinaryROC):
     def update(self, preds: F.Tensor, labels: F.Tensor) -> None:
         preds = torch.Tensor(preds).to(self.rank)
         labels = torch.LongTensor(labels).to(self.rank)
-        return super().update(preds, labels)
+        # https://github.com/Lightning-AI/torchmetrics/issues/3179
+        state = _binary_precision_recall_curve_update(preds, labels, self.thresholds)
+        if isinstance(state, torch.Tensor):
+            self.confmat += state
+        else:
+            self.preds.append(state[0])
+            self.target.append(state[1])
     
     def _check_nans(self, x, name):
         if any(math.isnan(x) for x in x): raise ValueError(f"NaN value found in {name}")
